@@ -24,7 +24,7 @@ certbot_work/
 *.tar.gz
 *.zip
 
-# Agent Data
+# Agent Data & Internal Notes
 memory/
 AGENTS.md
 BOOTSTRAP.md
@@ -33,27 +33,18 @@ IDENTITY.md
 MEMORY.md
 PARTNERSHIP_CHARTER.md
 PROJECT_ROADMAP.md
-RESEARCH*.md
+RESEARCH_*.md
 SCRUM_BOARD.md
 SOUL.md
 TOOLS.md
 USER.md
 LAPTOP_INSTALL_SURVIVAL_GUIDE.md
 personsnotes.md
+COGNITION_COIN_*.md
+HARDWARE_AND_MINING_ECONOMICS.md
+WHITEPAPER_v0.3.md
 
 # Web & Setup Scripts
-patch*.py
-patch*.php
-check*.php
-elevate*.php
-auth_hook.py
-cleanup_hook.py
-update_smf_settings.php
-
-# Internal tooling and hack scripts
-.clawhub/
-.openclaw/
-skills/
 patch_*.py
 patch_*.php
 check_*.py
@@ -78,3 +69,11 @@ Settings.php
 htaccess_content
 auth_hook.py
 cleanup_hook.py
+
+# Internal tooling and hack scripts
+.clawhub/
+.openclaw/
+skills/
+docs/
+public_website/
+static/
