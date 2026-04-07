@@ -1,0 +1,51 @@
+# Secrets and Keys
+.env
+wallets/
+*.pem
+
+# Python & Environments
+__pycache__/
+*.pyc
+venv/
+venv_llama/
+ssl_venv/
+
+# Blockchain Data & Logs
+blockchain.json
+*.bak
+*.log
+debug_log.txt
+mining_output.txt
+certbot_cfg/
+certbot_logs/
+certbot_work/
+
+# Backups & Archives
+*.tar.gz
+*.zip
+
+# Agent Data
+memory/
+AGENTS.md
+BOOTSTRAP.md
+HEARTBEAT.md
+IDENTITY.md
+MEMORY.md
+PARTNERSHIP_CHARTER.md
+PROJECT_ROADMAP.md
+RESEARCH*.md
+SCRUM_BOARD.md
+SOUL.md
+TOOLS.md
+USER.md
+LAPTOP_INSTALL_SURVIVAL_GUIDE.md
+personsnotes.md
+
+# Web & Setup Scripts
+patch*.py
+patch*.php
+check*.php
+elevate*.php
+auth_hook.py
+cleanup_hook.py
+update_smf_settings.php

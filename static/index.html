@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cognition Coin | Node Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #f4f5f7;
+            --text-color: #1f2937;
+            --border-color: #d1d5db;
+            --panel-bg: #ffffff;
+            --accent-color: #2563eb;
+            --accent-hover: #1d4ed8;
+            --alert-color: #ef4444;
+            --success-color: #10b981;
+            --code-bg: #f8fafc;
+        }
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 30px 20px;
+            line-height: 1.6;
+        }
+        h1, h2, h3 {
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 8px;
+            color: #111827;
+            font-weight: 600;
+            margin-top: 0;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        .panel {
+            background-color: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+        input, button {
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 10px 14px;
+            margin: 8px 0;
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        input {
+            background-color: #fff;
+            color: var(--text-color);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+        input:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+        }
+        button {
+            background-color: var(--accent-color);
+            color: #ffffff;
+            cursor: pointer;
+            font-weight: 600;
+            border: none;
+        }
+        button:hover {
+            background-color: var(--accent-hover);
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            background-color: var(--alert-color);
+            border-radius: 50%;
+            margin-right: 12px;
+            vertical-align: middle;
+            box-shadow: 0 0 4px var(--alert-color);
+        }
+        .status-indicator.connected {
+            background-color: var(--success-color);
+            box-shadow: 0 0 4px var(--success-color);
+        }
+        pre {
+            background-color: var(--code-bg);
+            padding: 16px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 13px;
+            color: #334155;
+            margin-top: 12px;
+        }
+        .auth-bar {
+            display: flex;
+            gap: 12px;
+        }
+        .auth-bar input {
+            flex-grow: 1;
+            margin: 0;
+        }
+        .auth-bar button {
+            width: auto;
+            margin: 0;
+            padding: 10px 24px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            text-align: left;
+        }
+        th, td {
+            padding: 8px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        th {
+            background-color: #f8fafc;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1><span class="status-indicator" id="conn-status"></span>Cognition Node Interface</h1>
+        
+        <div class="panel">
+            <h2>Authentication</h2>
+            <p>Enter the COG_API_TOKEN generated in your terminal.</p>
+            <div class="auth-bar">
+                <input type="password" id="apiToken" placeholder="Bearer Token...">
+                <button onclick="pingNode()">Connect</button>
+            </div>
+            <div id="authResponse"></div>
+        </div>
+
+        <div class="grid">
+            <div class="panel">
+                <h2>Network State</h2>
+                <p><strong>Block Height:</strong> <span id="lblHeight">--</span></p>
+                <p><strong>Difficulty:</strong> <span id="lblDiff">--</span></p>
+                <p><strong>UTXO Set Size:</strong> <span id="lblUtxo">--</span></p>
+                <button onclick="refreshState()">Refresh Global State</button>
+            </div>
+
+            <div class="panel">
+                <h2>Active Wallet</h2>
+                <div style="display: flex; gap: 8px;">
+                    <select id="walletSelect" onchange="walletSelected()" style="flex-grow: 1; padding: 10px; border-radius: 6px; border: 1px solid var(--border-color);"></select>
+                    <button onclick="generateWallet()" style="width: auto; white-space: nowrap;">+ New Identity</button>
+                </div>
+                <div style="margin-top: 12px; padding: 12px; background: #f8fafc; border-radius: 6px; border: 1px solid #e2e8f0;">
+                    <p style="margin: 0 0 8px 0; font-size: 13px; color: #64748b;">Selected Address:</p>
+                    <p id="activeAddress" style="margin: 0 0 12px 0; font-family: monospace; font-size: 14px; word-break: break-all;">--</p>
+                    <p style="margin: 0 0 8px 0; font-size: 13px; color: #64748b;">Balance:</p>
+                    <p id="activeBalance" style="margin: 0; font-weight: bold; font-size: 18px; color: var(--success-color);">-- CCOG</p>
+                </div>
+                <pre id="walletGenResult" style="display:none; margin-top: 12px;"></pre>
+                
+
+            </div>
+        </div>
+        <div class="panel">
+            <h2>Broadcast Transaction</h2>
+            <p style="font-size: 13px; color: #64748b;">Sending from: <span id="txSenderDisplay" style="font-family: monospace; color: var(--text-color); font-weight: 600;">--</span></p>
+            <div style="display: flex; gap: 12px; align-items: flex-start;">
+                <div style="flex-grow: 2;">
+                    <input type="text" id="txRecipient" placeholder="Recipient Public Key">
+                </div>
+                <div style="flex-grow: 1;">
+                    <input type="number" id="txAmount" placeholder="Amount (CCOG)" step="0.1">
+                </div>
+            </div>
+            <input type="hidden" id="txWallet" value="">
+            <button onclick="sendTransaction()" style="margin-top: 12px;">Sign & Broadcast Transaction</button>
+            <pre id="txResult" style="display:none;"></pre>
+        </div>
+
+        <div class="panel">
+            <h2>Ledger Audit</h2>
+            <input type="text" id="checkAddress" placeholder="Enter Public Key (Address) to check balance...">
+            <button onclick="checkBalance()">Check Balance</button>
+            <pre id="balanceResult" style="display:none;">...</pre>
+            
+            <hr style="border: 0; border-top: 1px dashed var(--border-color); margin: 20px 0;">
+            
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="border:none; margin:0;">Recent Transactions</h3>
+                <button onclick="loadHistory(document.getElementById('checkAddress').value || null)" style="width: auto; padding: 6px 12px; font-size: 12px;">Refresh</button>
+            </div>
+            <div style="margin-top: 12px; overflow-x: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Block</th>
+                            <th>Type</th>
+                            <th>TX ID</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody id="historyTableBody">
+                        <tr><td colspan="4" style="text-align: center; color: #64748b;">No history loaded. Click Connect or Refresh.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>Block Explorer (AI Payloads)</h2>
+            <input type="number" id="blockIndex" placeholder="Block Height (e.g. 0 for Genesis)">
+            <button onclick="getBlock()">Inspect Block</button>
+            <pre id="blockResult" style="display:none;">...</pre>
+        </div>
+    </div>
+
+    <script>
+        let token = "";
+
+        async function apiCall(endpoint, method="GET", body=null) {
+            token = document.getElementById("apiToken").value;
+            const headers = {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${token}`
+            };
+            
+            const options = { method, headers };
+            if (body) options.body = JSON.stringify(body);
+
+            try {
+                const res = await fetch(endpoint, options);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || "API Error");
+                return data;
+            } catch (err) {
+                console.error(err);
+                throw err;
+            }
+        }
+
+        async function pingNode() {
+            try {
+                await refreshState();
+                await loadWallets();
+                await loadHistory(document.getElementById('checkAddress').value || null);
+                document.getElementById('conn-status').classList.add('connected');
+                document.getElementById('authResponse').innerHTML = '<span style="color:var(--success-color); font-weight:bold;">Connection established. Access granted.</span>';
+            } catch (e) {
+                document.getElementById('conn-status').classList.remove('connected');
+                document.getElementById('authResponse').innerHTML = `<span style="color:var(--alert-color); font-weight:bold;">Connection failed: ${e.message}</span>`;
+            }
+        }
+
+        let allWallets = [];
+        
+        async function loadWallets() {
+            try {
+                const data = await apiCall('/wallet/list');
+                allWallets = data.wallets || [];
+                const select = document.getElementById('walletSelect');
+                select.innerHTML = '';
+                
+                if (allWallets.length === 0) {
+                    select.innerHTML = '<option value="">No wallets found</option>';
+                    document.getElementById('activeAddress').innerText = '--';
+                    document.getElementById('activeBalance').innerText = '-- CCOG';
+                    document.getElementById('txWallet').value = '';
+                    return;
+                }
+                
+                allWallets.forEach((w, idx) => {
+                    const opt = document.createElement('option');
+                    opt.value = w.file;
+                    const shortAddr = w.address.substring(0, 6) + '...' + w.address.substring(w.address.length - 6);
+                    opt.text = shortAddr + ' (' + w.balance + ' CCOG)';
+                    select.appendChild(opt);
+                });
+                
+                walletSelected();
+            } catch (e) {
+                console.error("Wallet load failed", e);
+            }
+        }
+        
+        function walletSelected() {
+            const file = document.getElementById('walletSelect').value;
+            const w = allWallets.find(x => x.file === file);
+            if (w) {
+                document.getElementById('activeAddress').innerText = w.address;
+                document.getElementById('activeBalance').innerText = w.balance + ' CCOG';
+                document.getElementById('txWallet').value = w.file;
+                document.getElementById('txSenderDisplay').innerText = w.address.substring(0, 16) + '...';
+                document.getElementById('checkAddress').value = w.address;
+                loadHistory(w.address);
+            }
+        }
+
+        async function refreshState() {
+            try {
+                const data = await apiCall('/blockchain/info');
+                document.getElementById('lblHeight').innerText = data.height;
+                document.getElementById('lblDiff').innerText = data.difficulty;
+                document.getElementById('lblUtxo').innerText = data.utxo_count;
+            } catch (e) {
+                console.error("State refresh failed");
+                throw e;
+            }
+        }
+
+        async function loadHistory(address = null) {
+            try {
+                let url = '/blockchain/history?limit=5';
+                if (address) {
+                    url += '&address=' + encodeURIComponent(address);
+                }
+                const data = await apiCall(url);
+                const tbody = document.getElementById('historyTableBody');
+                tbody.innerHTML = '';
+                
+                if (!data.transactions || data.transactions.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #64748b;">No recent transactions.</td></tr>';
+                    return;
+                }
+                
+                data.transactions.forEach(tx => {
+                    const tr = document.createElement('tr');
+                    const txType = tx.is_coinbase ? '<span style="color:var(--success-color);font-weight:bold;">MINED</span>' : 'TRANSFER';
+                    const shortTx = tx.tx_id.substring(0, 8) + '...';
+                    const date = new Date(tx.timestamp * 1000).toLocaleString();
+                    
+                    tr.innerHTML = `
+                        <td>${tx.block}</td>
+                        <td>${txType}</td>
+                        <td style="font-family:monospace;" title="${tx.tx_id}">${shortTx}</td>
+                        <td>${date}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (e) {
+                console.error("History load failed", e);
+            }
+        }
+
+        async function generateWallet() {
+            const res = document.getElementById('walletGenResult');
+            res.style.display = 'block';
+            res.innerText = 'Generating...';
+            try {
+                const data = await apiCall('/wallet/generate', "POST");
+                res.innerText = `SUCCESS\nFile: ${data.file}\nAddress: ${data.address.substring(0,20)}...`;
+                await loadWallets();
+            } catch (e) {
+                res.innerText = `ERROR: ${e.message}`;
+            }
+        }
+
+        async function checkBalance() {
+            const addr = document.getElementById('checkAddress').value;
+            if(!addr) return;
+            const res = document.getElementById('balanceResult');
+            res.style.display = 'block';
+            try {
+                const data = await apiCall(`/wallet/balance/${addr}`);
+                res.innerText = `Address: ${data.address.substring(0,20)}...\nBalance: ${data.balance} CCOG`;
+            } catch (e) {
+                res.innerText = `ERROR: ${e.message}`;
+            }
+        }
+
+        async function sendTransaction() {
+            const recipient = document.getElementById('txRecipient').value;
+            const amount = parseFloat(document.getElementById('txAmount').value);
+            const wallet_file = document.getElementById('txWallet').value;
+            const res = document.getElementById('txResult');
+            res.style.display = 'block';
+            
+            if(!recipient || !amount || !wallet_file) {
+                res.innerText = "Missing fields.";
+                return;
+            }
+
+            res.innerText = "Signing and broadcasting...";
+            try {
+                const data = await apiCall('/transaction/send', 'POST', { recipient, amount, wallet_file });
+                res.innerText = `SUCCESS\nTX ID: ${data.tx_id}\nStatus: ${data.message}`;
+                setTimeout(() => { refreshState(); loadHistory(document.getElementById('checkAddress').value || null); }, 2000);
+            } catch (e) {
+                res.innerText = `FAILED\n${e.message}`;
+            }
+        }
+
+        async function getBlock() {
+            const idx = document.getElementById('blockIndex').value;
+            if(!idx && idx !== '0') return;
+            const res = document.getElementById('blockResult');
+            res.style.display = 'block';
+            try {
+                const data = await apiCall(`/block/${idx}`);
+                res.innerText = JSON.stringify(data, null, 2);
+            } catch (e) {
+                res.innerText = `ERROR: ${e.message}`;
+            }
+        }
+    </script>
+</body>
+</html>

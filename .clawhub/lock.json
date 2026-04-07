@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "agent-browser": {
+      "version": "0.2.0",
+      "installedAt": 1772682900711
+    },
+    "claw-shell": {
+      "version": "1.0.0",
+      "installedAt": 1772684282646
+    },
+    "safe-exec": {
+      "version": "0.3.4",
+      "installedAt": 1772684343630
+    }
+  }
+}
