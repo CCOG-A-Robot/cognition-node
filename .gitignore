@@ -1,79 +1,51 @@
-# Secrets and Keys
+# Secrets and Environment
 .env
 wallets/
 *.pem
-
-# Python & Environments
 __pycache__/
 *.pyc
-venv/
-venv_llama/
+venv*/
 ssl_venv/
 
-# Blockchain Data & Logs
-blockchain.json
+# State and Logs
+*.json
 *.bak
 *.log
-debug_log.txt
-mining_output.txt
-certbot_cfg/
-certbot_logs/
-certbot_work/
-
-# Backups & Archives
+*.txt
+certbot*/
 *.tar.gz
 *.zip
 
-# Agent Data & Internal Notes
+# Agent and Internal Metadata
 memory/
-AGENTS.md
-BOOTSTRAP.md
-HEARTBEAT.md
-IDENTITY.md
-MEMORY.md
-PARTNERSHIP_CHARTER.md
-PROJECT_ROADMAP.md
-RESEARCH_*.md
-SCRUM_BOARD.md
-SOUL.md
-TOOLS.md
-USER.md
-LAPTOP_INSTALL_SURVIVAL_GUIDE.md
-personsnotes.md
-COGNITION_COIN_*.md
-HARDWARE_AND_MINING_ECONOMICS.md
-WHITEPAPER_v0.3.md
-
-# Web & Setup Scripts
-patch_*.py
-patch_*.php
-check_*.py
-check_*.php
-elevate_*.php
-update_smf_*.php
-upload_website.py
-test_*.py
-testnet_run.sh
-semantic_puzzle_prototype.py
-genesis_loop.py
-finish_prototype.py
-make_roadmap.py
-format_whitepaper.py
-reorder_whitepaper.py
-rewrite_html.py
-bridge_relayer.py
-get_addr.py
-end_of_day_updates.py
-solve_puzzle.py
-Settings.php
-htaccess_content
-auth_hook.py
-cleanup_hook.py
-
-# Internal tooling and hack scripts
+*.md
 .clawhub/
 .openclaw/
 skills/
 docs/
 public_website/
 static/
+*patch*.py
+*patch*.php
+*check*.py
+*check*.php
+*elevate*.php
+*update*.php
+*upload*.py
+*test*.py
+*.sh
+*prototype*.py
+*genesis*.py
+*roadmap*.py
+*whitepaper*.py
+*html*.py
+*relayer*.py
+*addr*.py
+*updates*.py
+*solve*.py
+Settings.php
+htaccess_content
+*hook*.py
+
+# Exceptions for required files
+!requirements.txt
