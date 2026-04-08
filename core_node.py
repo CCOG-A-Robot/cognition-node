@@ -26,6 +26,7 @@ def print_banner():
 def wallet_cmd(args):
     """Handles Identity and Cryptography"""
     global node_wallet # We might set the global node_wallet here
+    os.makedirs("wallets", exist_ok=True)
     WALLET_FILE = f"wallets/wallet_{args.port}.pem"
 
     if args.action == "create":
@@ -251,6 +252,7 @@ def mining_thread_func(miner_wallet):
 def node_cmd(args):
     """Runs the full verification node (listen/sync/P2P)."""
     global blockchain_instance, mempool_instance, p2p_node_instance, node_wallet
+    os.makedirs("wallets", exist_ok=True)
     WALLET_FILE = f"wallets/wallet_{args.port}.pem"
 
     # Initialize blockchain and mempool (if not already done)
