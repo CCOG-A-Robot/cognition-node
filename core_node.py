@@ -7,7 +7,7 @@ import threading
 from wallet_transaction import Wallet, Transaction, TransactionInput, TransactionOutput, UTXO
 from mempool_block import Mempool, Block, Blockchain, UTXOSet, generate_semantic_challenge # Import the dynamic prompt generator
 from p2p_network import P2PNode, MSG_NEW_TX, MSG_NEW_BLOCK
-from semantic_puzzle_prototype import ai_miner as semantic_ai_miner, verify_network_rules # Import the actual AI miner
+from semantic_miner import ai_miner as semantic_ai_miner, verify_network_rules # Import the actual AI miner
 
 # --- GLOBAL NODE INSTANCES (Initialized when the node starts) ---
 blockchain_instance = None
