@@ -7,7 +7,7 @@ from wallet_transaction import Transaction, TransactionInput, TransactionOutput
 # --- P2P Network Configuration ---
 # For a real network, these would be dynamic and discovered.
 # For this prototype, we'll use a simple list of seed nodes.
-SEED_NODES = [("10.0.0.248", 8000)] # Mookie
+SEED_NODES = [("24.144.104.66", 8000)] # DigitalOcean Main Seed Node
 PORT = 8000 # Default port for this node
 MAX_CONNECTIONS = 10 # Max number of outgoing peer connections
 
