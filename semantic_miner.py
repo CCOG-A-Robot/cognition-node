@@ -25,7 +25,28 @@ logging.getLogger().addHandler(console_handler)
 # The 'seed' (derived from the previous block hash) is CRITICAL for deterministic output.
 
 # Define the path to the GGUF model (the one we just downloaded)
-LLM_MODEL_PATH = os.path.expanduser("~/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf")
+MODEL_DIR = "models"
+MODEL_FILE = "llama-3-8b.gguf"
+LLM_MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILE)
+
+def ensure_model_exists():
+    if not os.path.exists(LLM_MODEL_PATH):
+        print(f"[*] Llama-3 model not found at {LLM_MODEL_PATH}. Initiating automated download...")
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        try:
+            from huggingface_hub import hf_hub_download
+            downloaded_path = hf_hub_download(
+                repo_id="bartowski/Meta-Llama-3-8B-Instruct-GGUF",
+                filename="Meta-Llama-3-8B-Instruct-Q4_K_M.gguf",
+                local_dir=MODEL_DIR
+            )
+            # Rename it to our expected name
+            os.rename(downloaded_path, LLM_MODEL_PATH)
+            print("[*] Model successfully downloaded and secured.")
+        except Exception as e:
+            logging.error(f"Failed to download model: {e}")
+            print(f"[!] Error: Could not download the model automatically. {e}")
+            sys.exit(1)
 
 # Global LLM instance to avoid reloading the model on every call
 _llm_instance = None
@@ -33,6 +54,7 @@ _llm_instance = None
 def get_llm_instance():
     global _llm_instance
     if _llm_instance is None:
+        ensure_model_exists()
         logging.info(f"[Deterministic LLM] Initializing Llama model from: {LLM_MODEL_PATH}")
         try:
             _llm_instance = Llama(
