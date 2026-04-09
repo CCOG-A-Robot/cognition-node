@@ -239,6 +239,9 @@ class P2PNode:
                 if peer_height > our_height:
                     print(f"[P2P Node {self.port}] Peer is at height {peer_height}, we are at {our_height}. Requesting blocks...")
                     self.send_message(conn, MSG_GET_BLOCKS, {"from_index": our_height + 1})
+                elif peer_height < our_height:
+                    print(f"[P2P Node {self.port}] Peer is behind (at {peer_height}, we are at {our_height}). Sending tip to force sync...")
+                    self.send_message(conn, MSG_NEW_BLOCK, {"block": self.blockchain.chain[-1].to_dict()})
 
         elif msg_type == MSG_GET_PEERS:
             with self.peer_lock:
