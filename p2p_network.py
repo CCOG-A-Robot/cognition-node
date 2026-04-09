@@ -126,6 +126,7 @@ class P2PNode:
             if self.blockchain and self.blockchain.chain:
                 payload["height"] = len(self.blockchain.chain) - 1
                 payload["tip_hash"] = self.blockchain.chain[-1].hash
+                payload["genesis_hash"] = self.blockchain.chain[0].hash
             self.send_message(peer_socket, MSG_HANDSHAKE, payload)
 
             # Start a thread to listen to this peer
@@ -218,6 +219,15 @@ class P2PNode:
 
         if msg_type == MSG_HANDSHAKE:
             peer_port = payload.get("port")
+            peer_genesis = payload.get("genesis_hash")
+            
+            if self.blockchain and self.blockchain.chain and peer_genesis:
+                our_genesis = self.blockchain.chain[0].hash
+                if peer_genesis != our_genesis:
+                    print(f"[P2P Node {self.port}] ❌ Genesis Hash mismatch! Peer: {peer_genesis[:8]}... Us: {our_genesis[:8]}... Dropping dirty connection.")
+                    self._remove_peer(conn, addr)
+                    return
+
             if peer_port and (addr[0], peer_port) not in self.peers:
                 print(f"[P2P Node {self.port}] Adding new peer from handshake: {addr[0]}:{peer_port}")
                 import threading
