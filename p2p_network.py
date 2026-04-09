@@ -22,15 +22,37 @@ MSG_RESOLVE_FORK = "RESOLVE_FORK"
 MSG_FORK_BLOCKS = "FORK_BLOCKS"      # Request for blocks (e.g., for syncing)
 MSG_BLOCKS    = "BLOCKS"           # Response with blocks
 
-class P2PNode:
-    def __init__(self, host="127.0.0.1", port=PORT, blockchain=None, mempool=None):
+# --- Peer Data Structure ---
+class Peer:
+    def __init__(self, host, port, last_seen=None):
         self.host = host
         self.port = port
-        self.peers = {} # Dictionary to store connected peers: { (ip, port): socket_object }
-        self.peer_lock = threading.Lock() # Lock for thread-safe access to peers
+        self.last_seen = last_seen if last_seen else time.time()
+        self.status = "new" # Can be 'new', 'connected', 'disconnected'
+
+    def __repr__(self):
+        return f"Peer({self.host}:{self.port}, status={self.status})"
+
+    def to_dict(self):
+        return {
+            "host": self.host,
+            "port": self.port,
+            "last_seen": self.last_seen
+        }
+
+
+class P2PNode:
+    def __init__(self, host="0.0.0.0", port=PORT, blockchain=None, mempool=None):
+        self.host = host
+        self.port = port
+        # self.peers is now a dictionary of Peer objects: { (ip, port): Peer_object }
+        # Sockets will be managed separately or within the Peer object if we decide later.
+        self.known_peers = {} # This will store all known peers, connected or not.
+        self.connected_peers = {} # { (ip, port): socket_object }
+        self.peer_lock = threading.Lock()
         self.running = True
-        self.blockchain = blockchain # Reference to our blockchain instance
-        self.mempool = mempool     # Reference to our mempool instance
+        self.blockchain = blockchain
+        self.mempool = mempool
 
         print(f"[P2P Node {self.port}] Initializing...")
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -39,60 +61,81 @@ class P2PNode:
         self.server_socket.listen(5)
         print(f"[P2P Node {self.port}] Listening on {self.host}:{self.port}")
 
+        # Bootstrap with initial seed nodes
+        for host, port in SEED_NODES:
+            self.add_peer(host, port)
+
+    def add_peer(self, host, port):
+        with self.peer_lock:
+            if (host, port) not in self.known_peers:
+                print(f"[P2P Node {self.port}] Discovered new peer: {host}:{port}")
+                self.known_peers[(host, port)] = Peer(host, port)
+
     def start(self):
         # Thread to accept incoming connections
         accept_thread = threading.Thread(target=self._accept_connections)
         accept_thread.start()
 
-        # Thread to connect to known seed nodes (and periodically discover more)
-        connect_thread = threading.Thread(target=self._connect_to_seed_nodes)
+        # Thread to manage our connection pool from the list of known peers
+        connect_thread = threading.Thread(target=self._connect_to_known_peers)
         connect_thread.start()
 
     def stop(self):
         print(f"[P2P Node {self.port}] Shutting down...")
         self.running = False
+        with self.peer_lock:
+            for peer_socket in self.connected_peers.values():
+                peer_socket.close()
         self.server_socket.close()
-        for peer_socket in self.peers.values():
-            peer_socket.close()
 
     def _accept_connections(self):
         while self.running:
             try:
                 conn, addr = self.server_socket.accept()
                 print(f"[P2P Node {self.port}] Accepted connection from {addr}")
+                
                 with self.peer_lock:
-                    self.peers[addr] = conn
-                # Start a new thread to handle this client connection
+                    if len(self.connected_peers) >= MAX_CONNECTIONS:
+                        print(f"[P2P Node {self.port}] Max connections reached, refusing connection from {addr}")
+                        conn.close()
+                        continue
+                    
+                    self.connected_peers[addr] = conn
+                    # Add to known peers and update status
+                    self.add_peer(addr[0], addr[1])
+                    self.known_peers[addr].status = "connected"
+                    self.known_peers[addr].last_seen = time.time()
+
                 client_handler = threading.Thread(target=self._handle_connection, args=(conn, addr))
                 client_handler.start()
             except socket.timeout:
                 continue
             except Exception as e:
-                if self.running: # Only print error if node is still supposed to be running
+                if self.running:
                     print(f"[P2P Node {self.port}] Error accepting connection: {e}")
                 break
 
-    def _connect_to_seed_nodes(self):
-        import socket
-        # Get actual local IP to prevent self-connection when host is 0.0.0.0
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(('8.8.8.8', 80))
-            my_ip = s.getsockname()[0]
-            s.close()
-        except:
-            my_ip = "127.0.0.1"
-
+    def _connect_to_known_peers(self):
+        # This thread will now manage our connection pool from the list of known peers
         while self.running:
-            # Continuously retry seed nodes
-            for host, port in SEED_NODES:
-                if host != my_ip and (host, port) != (self.host, self.port):
-                    # connect_to_peer already checks if it's in self.peers
-                    self.connect_to_peer(host, port)
+            peers_to_try = []
+            with self.peer_lock:
+                # Find peers we know about but aren't connected to
+                for addr, peer in self.known_peers.items():
+                    if addr not in self.connected_peers and peer.status != "connected":
+                        peers_to_try.append((addr, peer))
+
+            if not peers_to_try:
+                # If we have no one to connect to, maybe we should ask our current connections for more friends
+                if self.connected_peers:
+                    print("[P2P Node] No new peers to connect to. Broadcasting GET_PEERS to find more.")
+                    self.broadcast_message(MSG_GET_PEERS, {"sender_port": self.port})
             
-            time.sleep(15) # Check every 15 seconds
-            if self.peers:
-                self.broadcast_message(MSG_GET_PEERS, {"sender_port": self.port})
+            for addr, peer in peers_to_try:
+                self.connect_to_peer(addr[0], addr[1])
+                time.sleep(1) # Stagger connection attempts
+
+            time.sleep(15) # Wait before scanning for new connections again
 
     def connect_to_peer(self, host, port):
         # Prevent node from attempting to connect to its own external IP
@@ -104,22 +147,27 @@ class P2PNode:
         except:
             my_ip = "127.0.0.1"
             
-        if host == my_ip:
+        if (host, port) == (my_ip, self.port):
             return
 
         with self.peer_lock:
-            if (host, port) in self.peers:
+            if (host, port) in self.connected_peers:
                 return # Already connected
-            if len(self.peers) >= MAX_CONNECTIONS:
-                print(f"[P2P Node {self.port}] Max connections reached, cannot connect to {host}:{port}")
+            if len(self.connected_peers) >= MAX_CONNECTIONS:
+                # print(f"[P2P Node {self.port}] Max connections reached, cannot connect to {host}:{port}")
                 return
 
         try:
             peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             peer_socket.connect((host, port))
-            print(f"[P2P Node {self.port}] Connected to peer {host}:{port}")
+            addr = (host, port)
+            print(f"[P2P Node {self.port}] Connected to peer {addr}")
+            
             with self.peer_lock:
-                self.peers[(host, port)] = peer_socket
+                self.connected_peers[addr] = peer_socket
+                self.add_peer(host, port) # Ensure it's in known_peers
+                self.known_peers[addr].status = "connected"
+                self.known_peers[addr].last_seen = time.time()
             
             # Send handshake message
             payload = {"port": self.port}
@@ -129,12 +177,14 @@ class P2PNode:
                 payload["genesis_hash"] = self.blockchain.chain[0].hash
             self.send_message(peer_socket, MSG_HANDSHAKE, payload)
 
-            # Start a thread to listen to this peer
-            listener_thread = threading.Thread(target=self._handle_connection, args=(peer_socket, (host, port)))
+            listener_thread = threading.Thread(target=self._handle_connection, args=(peer_socket, addr))
             listener_thread.start()
             return True
         except Exception as e:
-            print(f"[P2P Node {self.port}] Could not connect to {host}:{port}: {e}")
+            # print(f"[P2P Node {self.port}] Could not connect to {host}:{port}: {e}")
+            with self.peer_lock:
+                if (host, port) in self.known_peers:
+                    self.known_peers[(host, port)].status = "disconnected"
             return False
 
     def send_message(self, target_socket, msg_type, payload):
@@ -144,11 +194,19 @@ class P2PNode:
             target_socket.sendall(f"{len(message):<10}".encode('utf-8') + message)
         except Exception as e:
             print(f"[P2P Node {self.port}] Error sending message to peer: {e}")
-            self._remove_peer(target_socket)
+            # Find the address associated with this socket to remove it
+            addr_to_remove = None
+            with self.peer_lock:
+                for addr, sock in self.connected_peers.items():
+                    if sock == target_socket:
+                        addr_to_remove = addr
+                        break
+            if addr_to_remove:
+                self._remove_peer(target_socket, addr_to_remove)
 
     def broadcast_message(self, msg_type, payload, exclude_peer=None):
         with self.peer_lock:
-            peers_to_notify = list(self.peers.values())
+            peers_to_notify = list(self.connected_peers.values())
         
         for peer_socket in peers_to_notify:
             if peer_socket != exclude_peer:
@@ -182,6 +240,11 @@ class P2PNode:
                     message = buffer[10 : 10 + msg_len].decode('utf-8')
                     buffer = buffer[10 + msg_len:] # Remaining buffer
                     
+                    # Update peer's last_seen timestamp
+                    with self.peer_lock:
+                        if addr in self.known_peers:
+                            self.known_peers[addr].last_seen = time.time()
+
                     self._process_message(conn, addr, json.loads(message))
 
             except json.JSONDecodeError as e:
@@ -195,16 +258,13 @@ class P2PNode:
         print(f"[P2P Node {self.port}] Connection closed with {addr}")
         self._remove_peer(conn, addr)
 
-    def _remove_peer(self, peer_socket, addr=None):
+    def _remove_peer(self, peer_socket, addr):
         with self.peer_lock:
-            if addr: # If addr is known, remove by addr
-                if addr in self.peers:
-                    del self.peers[addr]
-            else: # Otherwise, find by socket object
-                for p_addr, p_sock in list(self.peers.items()):
-                    if p_sock == peer_socket:
-                        del self.peers[p_addr]
-                        break
+            if addr in self.connected_peers:
+                del self.connected_peers[addr]
+            if addr in self.known_peers:
+                self.known_peers[addr].status = "disconnected"
+                self.known_peers[addr].last_seen = time.time()
             try:
                 peer_socket.close()
             except:
@@ -228,10 +288,9 @@ class P2PNode:
                     self._remove_peer(conn, addr)
                     return
 
-            if peer_port and (addr[0], peer_port) not in self.peers:
-                print(f"[P2P Node {self.port}] Adding new peer from handshake: {addr[0]}:{peer_port}")
-                import threading
-                threading.Thread(target=self.connect_to_peer, args=(addr[0], peer_port)).start()
+            # If they tell us their port, make sure we know about them.
+            if peer_port:
+                self.add_peer(addr[0], peer_port)
             
             peer_height = payload.get("height")
             if peer_height is not None and self.blockchain:
@@ -240,21 +299,32 @@ class P2PNode:
                     print(f"[P2P Node {self.port}] Peer is at height {peer_height}, we are at {our_height}. Requesting blocks...")
                     self.send_message(conn, MSG_GET_BLOCKS, {"from_index": our_height + 1})
                 elif peer_height < our_height:
-                    print(f"[P2P Node {self.port}] Peer is behind (at {peer_height}, we are at {our_height}). Sending tip to force sync...")
-                    self.send_message(conn, MSG_NEW_BLOCK, {"block": self.blockchain.chain[-1].to_dict()})
+                    # Don't send a full block unless we're sure they need it.
+                    # A simple handshake response is enough for now.
+                    pass
 
         elif msg_type == MSG_GET_PEERS:
+            # Share our entire address book of known peers
             with self.peer_lock:
-                known_peers = [{"host": p_addr[0], "port": p_addr[1]} for p_addr in self.peers.keys()]
-            self.send_message(conn, MSG_PEERS, {"peers": known_peers, "sender_port": self.port})
+                peers_to_share = [peer.to_dict() for peer in self.known_peers.values()]
+            self.send_message(conn, MSG_PEERS, {"peers": peers_to_share})
 
         elif msg_type == MSG_PEERS:
+            # Received a list of potential new peers. Add them to our address book.
             for peer_info in payload.get("peers", []):
                 peer_host = peer_info.get("host")
                 peer_port = peer_info.get("port")
-                if peer_host and peer_port and (peer_host, peer_port) != (self.host, self.port):
-                    import threading
-                    threading.Thread(target=self.connect_to_peer, args=(peer_host, peer_port)).start()
+                if peer_host and peer_port:
+                    # Prevent adding ourselves
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        s.connect(('8.8.8.8', 80))
+                        my_ip = s.getsockname()[0]
+                        s.close()
+                    except:
+                        my_ip = "127.0.0.1"
+                    if (peer_host, peer_port) != (my_ip, self.port):
+                        self.add_peer(peer_host, peer_port)
         
         elif msg_type == MSG_NEW_TX:
             tx_data = payload.get("transaction")
