@@ -95,6 +95,18 @@ class P2PNode:
                 self.broadcast_message(MSG_GET_PEERS, {"sender_port": self.port})
 
     def connect_to_peer(self, host, port):
+        # Prevent node from attempting to connect to its own external IP
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('8.8.8.8', 80))
+            my_ip = s.getsockname()[0]
+            s.close()
+        except:
+            my_ip = "127.0.0.1"
+            
+        if host == my_ip:
+            return
+
         with self.peer_lock:
             if (host, port) in self.peers:
                 return # Already connected
