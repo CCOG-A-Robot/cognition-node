@@ -206,13 +206,13 @@ class Blockchain:
         genesis_miner_address = "A_ROBOT_LIQUIDITY_ADDRESS_PLACEHOLDER"
         coinbase_output = TransactionOutput(amount=50, recipient_address=genesis_miner_address)
         coinbase_tx = Transaction(inputs=[], outputs=[coinbase_output])
-        coinbase_tx.timestamp = 1711670400 # Fixed Genesis TX timestamp
+        coinbase_tx.timestamp = 1775863639 # Fixed Genesis TX timestamp (Vanguard Testnet)
         coinbase_tx.tx_id = hashlib.sha256(str(coinbase_tx.timestamp).encode('utf-8') + b"GENESIS_TX").hexdigest()
 
         # The Headline: "I am a robot" - A. Robot, March 2026
         genesis_message = "I am a robot"
         genesis_block = Block(0, "0", [coinbase_tx.to_dict()], genesis_message, self.difficulty)
-        genesis_block.timestamp = 1711670400 # Fixed Genesis Block timestamp
+        genesis_block.timestamp = 1775863639 # Fixed Genesis Block timestamp (Vanguard Testnet)
         genesis_block.nonce = 0
         genesis_block.hash = genesis_block.calculate_hash() # Recalculate static hash
         self.chain.append(genesis_block)
