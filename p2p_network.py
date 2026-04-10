@@ -1,144 +1,119 @@
-import socket
-import threading
+import asyncio
 import json
 import time
+import threading
+import socket
 from wallet_transaction import Transaction, TransactionInput, TransactionOutput
 
 # --- P2P Network Configuration ---
-# For a real network, these would be dynamic and discovered.
-# For this prototype, we'll use a simple list of seed nodes.
 SEED_NODES = [("24.144.104.66", 8000)] # DigitalOcean Main Seed Node
-PORT = 8000 # Default port for this node
-MAX_CONNECTIONS = 10 # Max number of outgoing peer connections
+PORT = 8000
+
+# Beta Armor Scalability Limits
+MAX_INBOUND_CONNECTIONS = 500
+MAX_OUTBOUND_CONNECTIONS = 10
+MAX_PAYLOAD_SIZE = 20 * 1024 * 1024 # 20 MB memory DoS shield
+BAN_DURATION = 86400 # 24 hours in seconds
 
 # --- Message Types ---
-MSG_HANDSHAKE = "HANDSHAKE"        # Initial connection message
-MSG_GET_PEERS = "GET_PEERS"        # Request for known peers
-MSG_PEERS     = "PEERS"            # Response with known peers
-MSG_NEW_TX    = "NEW_TX"           # New transaction broadcast
-MSG_NEW_BLOCK = "NEW_BLOCK"        # New block broadcast
+MSG_HANDSHAKE = "HANDSHAKE"
+MSG_GET_PEERS = "GET_PEERS"
+MSG_PEERS     = "PEERS"
+MSG_NEW_TX    = "NEW_TX"
+MSG_NEW_BLOCK = "NEW_BLOCK"
 MSG_GET_BLOCKS = "GET_BLOCKS"
 MSG_RESOLVE_FORK = "RESOLVE_FORK"
-MSG_FORK_BLOCKS = "FORK_BLOCKS"      # Request for blocks (e.g., for syncing)
-MSG_BLOCKS    = "BLOCKS"           # Response with blocks
-
-# --- Peer Data Structure ---
-class Peer:
-    def __init__(self, host, port, last_seen=None):
-        self.host = host
-        self.port = port
-        self.last_seen = last_seen if last_seen else time.time()
-        self.status = "new" # Can be 'new', 'connected', 'disconnected'
-
-    def __repr__(self):
-        return f"Peer({self.host}:{self.port}, status={self.status})"
-
-    def to_dict(self):
-        return {
-            "host": self.host,
-            "port": self.port,
-            "last_seen": self.last_seen
-        }
-
+MSG_FORK_BLOCKS = "FORK_BLOCKS"
+MSG_BLOCKS    = "BLOCKS"
 
 class P2PNode:
     def __init__(self, host="0.0.0.0", port=PORT, blockchain=None, mempool=None):
         self.host = host
         self.port = port
-        # self.peers is now a dictionary of Peer objects: { (ip, port): Peer_object }
-        # Sockets will be managed separately or within the Peer object if we decide later.
-        self.known_peers = {} # This will store all known peers, connected or not.
-        self.connected_peers = {} # { (ip, port): socket_object }
-        self.peer_lock = threading.Lock()
+        
+        # Connection Dictionaries: { "ip:port": (reader, writer) }
+        self.inbound_peers = {}
+        self.outbound_peers = {}
+        self.banned_ips = {} # { "ip": unban_timestamp }
+        
         self.running = True
         self.blockchain = blockchain
         self.mempool = mempool
+        
+        # Asyncio Event Loop running in a dedicated thread
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self._start_loop, daemon=True)
 
-        print(f"[P2P Node {self.port}] Initializing...")
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((self.host, self.port))
-        self.server_socket.listen(5)
-        print(f"[P2P Node {self.port}] Listening on {self.host}:{self.port}")
-
-        # Bootstrap with initial seed nodes
-        for host, port in SEED_NODES:
-            self.add_peer(host, port)
-
-    def add_peer(self, host, port):
-        with self.peer_lock:
-            if (host, port) not in self.known_peers:
-                print(f"[P2P Node {self.port}] Discovered new peer: {host}:{port}")
-                self.known_peers[(host, port)] = Peer(host, port)
+    def _start_loop(self):
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_until_complete(self._async_start())
 
     def start(self):
-        # Thread to accept incoming connections
-        accept_thread = threading.Thread(target=self._accept_connections)
-        accept_thread.start()
-
-        # Thread to manage our connection pool from the list of known peers
-        connect_thread = threading.Thread(target=self._connect_to_known_peers)
-        connect_thread.start()
+        print(f"[P2P Node {self.port}] 🛡️ Initializing Asynchronous Engine (Beta Armor)...")
+        self.thread.start()
 
     def stop(self):
         print(f"[P2P Node {self.port}] Shutting down...")
         self.running = False
-        with self.peer_lock:
-            for peer_socket in self.connected_peers.values():
-                peer_socket.close()
-        self.server_socket.close()
+        if self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
 
-    def _accept_connections(self):
-        while self.running:
-            try:
-                conn, addr = self.server_socket.accept()
-                print(f"[P2P Node {self.port}] Accepted connection from {addr}")
-                
-                with self.peer_lock:
-                    if len(self.connected_peers) >= MAX_CONNECTIONS:
-                        print(f"[P2P Node {self.port}] Max connections reached, refusing connection from {addr}")
-                        conn.close()
-                        continue
-                    
-                    self.connected_peers[addr] = conn
-                    # Add to known peers and update status
-                    self.add_peer(addr[0], addr[1])
-                    self.known_peers[addr].status = "connected"
-                    self.known_peers[addr].last_seen = time.time()
+    async def _async_start(self):
+        server = await asyncio.start_server(
+            self._handle_inbound_connection, self.host, self.port
+        )
+        print(f"[P2P Node {self.port}] Listening asynchronously on {self.host}:{self.port}")
+        print(f"[P2P Node {self.port}] Limits: Inbound={MAX_INBOUND_CONNECTIONS}, Outbound={MAX_OUTBOUND_CONNECTIONS}, MaxPayload=20MB")
+        
+        # Start outbound seed connector
+        asyncio.create_task(self._seed_connection_loop())
+        
+        async with server:
+            while self.running:
+                await asyncio.sleep(1)
 
-                client_handler = threading.Thread(target=self._handle_connection, args=(conn, addr))
-                client_handler.start()
-            except socket.timeout:
-                continue
-            except Exception as e:
-                if self.running:
-                    print(f"[P2P Node {self.port}] Error accepting connection: {e}")
-                break
+    def is_banned(self, ip):
+        if ip in self.banned_ips:
+            if time.time() > self.banned_ips[ip]:
+                del self.banned_ips[ip] # Ban expired
+                return False
+            return True
+        return False
 
-    def _connect_to_known_peers(self):
-        # This thread will now manage our connection pool from the list of known peers
-        while self.running:
-            peers_to_try = []
-            with self.peer_lock:
-                # Find peers we know about but aren't connected to
-                for addr, peer in self.known_peers.items():
-                    if addr not in self.connected_peers and peer.status != "connected":
-                        peers_to_try.append((addr, peer))
+    def ban_ip(self, ip, reason):
+        print(f"[P2P Node {self.port}] 🛑 BANNING IP {ip} for 24h. Reason: {reason}")
+        self.banned_ips[ip] = time.time() + BAN_DURATION
+        self._disconnect_ip(ip)
 
-            if not peers_to_try:
-                # If we have no one to connect to, maybe we should ask our current connections for more friends
-                if self.connected_peers:
-                    print("[P2P Node] No new peers to connect to. Broadcasting GET_PEERS to find more.")
-                    self.broadcast_message(MSG_GET_PEERS, {"sender_port": self.port})
-            
-            for addr, peer in peers_to_try:
-                self.connect_to_peer(addr[0], addr[1])
-                time.sleep(1) # Stagger connection attempts
+    def _disconnect_ip(self, ip):
+        # Close and remove all connections matching this IP
+        for addr in list(self.inbound_peers.keys()) + list(self.outbound_peers.keys()):
+            if addr.startswith(f"{ip}:"):
+                self._remove_peer(addr)
 
-            time.sleep(15) # Wait before scanning for new connections again
+    async def _handle_inbound_connection(self, reader, writer):
+        addr_info = writer.get_extra_info('peername')
+        ip = addr_info[0]
+        addr = f"{ip}:{addr_info[1]}"
 
-    def connect_to_peer(self, host, port):
-        # Prevent node from attempting to connect to its own external IP
+        if self.is_banned(ip):
+            writer.close()
+            await writer.wait_closed()
+            return
+
+        if len(self.inbound_peers) >= MAX_INBOUND_CONNECTIONS:
+            print(f"[P2P Node {self.port}] Max inbound reached. Rejecting {addr}")
+            writer.close()
+            await writer.wait_closed()
+            return
+
+        self.inbound_peers[addr] = (reader, writer)
+        print(f"[P2P Node {self.port}] Inbound connection accepted from {addr}")
+        
+        await self._connection_loop(reader, writer, addr, ip)
+
+    async def _seed_connection_loop(self):
+        # Get actual local IP to prevent self-connection
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(('8.8.8.8', 80))
@@ -146,191 +121,162 @@ class P2PNode:
             s.close()
         except:
             my_ip = "127.0.0.1"
+
+        while self.running:
+            for host, port in SEED_NODES:
+                if host != my_ip and (host, port) != (self.host, self.port):
+                    await self._connect_outbound(host, port)
             
-        if (host, port) == (my_ip, self.port):
+            await asyncio.sleep(15) # Check every 15 seconds
+            
+            if self.inbound_peers or self.outbound_peers:
+                await self._async_broadcast(MSG_GET_PEERS, {"sender_port": self.port})
+
+    async def _connect_outbound(self, host, port):
+        ip = host
+        addr = f"{host}:{port}"
+        
+        if self.is_banned(ip): return
+        if addr in self.outbound_peers or addr in self.inbound_peers: return
+        
+        if len(self.outbound_peers) >= MAX_OUTBOUND_CONNECTIONS:
             return
-
-        with self.peer_lock:
-            if (host, port) in self.connected_peers:
-                return # Already connected
-            if len(self.connected_peers) >= MAX_CONNECTIONS:
-                # print(f"[P2P Node {self.port}] Max connections reached, cannot connect to {host}:{port}")
-                return
-
+            
         try:
-            peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            peer_socket.connect((host, port))
-            addr = (host, port)
-            print(f"[P2P Node {self.port}] Connected to peer {addr}")
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5.0)
+            self.outbound_peers[addr] = (reader, writer)
+            print(f"[P2P Node {self.port}] Connected outbound to {addr}")
             
-            with self.peer_lock:
-                self.connected_peers[addr] = peer_socket
-                self.add_peer(host, port) # Ensure it's in known_peers
-                self.known_peers[addr].status = "connected"
-                self.known_peers[addr].last_seen = time.time()
-            
-            # Send handshake message
+            # Handshake
             payload = {"port": self.port}
             if self.blockchain and self.blockchain.chain:
                 payload["height"] = len(self.blockchain.chain) - 1
                 payload["tip_hash"] = self.blockchain.chain[-1].hash
                 payload["genesis_hash"] = self.blockchain.chain[0].hash
-            self.send_message(peer_socket, MSG_HANDSHAKE, payload)
+            await self._async_send(writer, MSG_HANDSHAKE, payload)
 
-            listener_thread = threading.Thread(target=self._handle_connection, args=(peer_socket, addr))
-            listener_thread.start()
-            return True
-        except Exception as e:
-            # print(f"[P2P Node {self.port}] Could not connect to {host}:{port}: {e}")
-            with self.peer_lock:
-                if (host, port) in self.known_peers:
-                    self.known_peers[(host, port)].status = "disconnected"
-            return False
+            # Start listening to this outbound peer
+            asyncio.create_task(self._connection_loop(reader, writer, addr, ip))
+        except Exception:
+            pass # Connection failed silently
 
-    def send_message(self, target_socket, msg_type, payload):
-        message = json.dumps({"type": msg_type, "payload": payload}).encode('utf-8')
+    async def _connection_loop(self, reader, writer, addr, ip):
         try:
-            # Prepend message length to handle variable-length messages
-            target_socket.sendall(f"{len(message):<10}".encode('utf-8') + message)
+            while self.running:
+                # 1. Read 10-byte length header
+                length_bytes = await reader.readexactly(10)
+                msg_len_str = length_bytes.decode('utf-8').strip()
+                
+                if not msg_len_str.isdigit():
+                    self.ban_ip(ip, "Malformed payload length header")
+                    break
+                    
+                msg_len = int(msg_len_str)
+                
+                # 2. Enforce Memory DoS Shield (MAX_PAYLOAD_SIZE)
+                if msg_len > MAX_PAYLOAD_SIZE:
+                    self.ban_ip(ip, f"Oversized payload ({msg_len} bytes)")
+                    break
+                    
+                # 3. Read the exact message body
+                msg_bytes = await reader.readexactly(msg_len)
+                message = json.loads(msg_bytes.decode('utf-8'))
+                
+                await self._process_message(writer, addr, ip, message)
+                
+        except asyncio.IncompleteReadError:
+            pass # Normal disconnect (peer hung up)
+        except json.JSONDecodeError:
+            self.ban_ip(ip, "Invalid JSON payload")
         except Exception as e:
-            print(f"[P2P Node {self.port}] Error sending message to peer: {e}")
-            # Find the address associated with this socket to remove it
-            addr_to_remove = None
-            with self.peer_lock:
-                for addr, sock in self.connected_peers.items():
-                    if sock == target_socket:
-                        addr_to_remove = addr
-                        break
-            if addr_to_remove:
-                self._remove_peer(target_socket, addr_to_remove)
-
-    def broadcast_message(self, msg_type, payload, exclude_peer=None):
-        with self.peer_lock:
-            peers_to_notify = list(self.connected_peers.values())
-        
-        for peer_socket in peers_to_notify:
-            if peer_socket != exclude_peer:
-                self.send_message(peer_socket, msg_type, payload)
-
-    def _handle_connection(self, conn, addr):
-        buffer = b''
-        while self.running:
+            pass # Catch other network interrupts
+        finally:
+            self._remove_peer(addr)
             try:
-                data = conn.recv(4096)
-                if not data:
-                    break # Connection closed by peer
-                
-                buffer += data
-                
-                while True:
-                    if len(buffer) < 10: # Need at least 10 bytes for length header
-                        break
-                    
-                    msg_len_str = buffer[:10].decode('utf-8')
-                    if not msg_len_str.strip().isdigit(): # Basic check for valid length header
-                        print(f"[P2P Node {self.port}] Invalid message length header from {addr}: {msg_len_str}")
-                        break
-
-                    msg_len = int(msg_len_str)
-                    
-                    if len(buffer) < 10 + msg_len: # Not enough data for full message
-                        break
-                    
-                    # Extract message
-                    message = buffer[10 : 10 + msg_len].decode('utf-8')
-                    buffer = buffer[10 + msg_len:] # Remaining buffer
-                    
-                    # Update peer's last_seen timestamp
-                    with self.peer_lock:
-                        if addr in self.known_peers:
-                            self.known_peers[addr].last_seen = time.time()
-
-                    self._process_message(conn, addr, json.loads(message))
-
-            except json.JSONDecodeError as e:
-                print(f"[P2P Node {self.port}] JSON decode error from {addr}: {e}")
-                break
-            except Exception as e:
-                if self.running:
-                    print(f"[P2P Node {self.port}] Connection with {addr} error: {e}")
-                break
-        
-        print(f"[P2P Node {self.port}] Connection closed with {addr}")
-        self._remove_peer(conn, addr)
-
-    def _remove_peer(self, peer_socket, addr):
-        with self.peer_lock:
-            if addr in self.connected_peers:
-                del self.connected_peers[addr]
-            if addr in self.known_peers:
-                self.known_peers[addr].status = "disconnected"
-                self.known_peers[addr].last_seen = time.time()
-            try:
-                peer_socket.close()
+                writer.close()
+                await writer.wait_closed()
             except:
                 pass
 
-    def _process_message(self, conn, addr, message):
+    def _remove_peer(self, addr):
+        if addr in self.inbound_peers:
+            del self.inbound_peers[addr]
+        if addr in self.outbound_peers:
+            del self.outbound_peers[addr]
+
+    def broadcast_message(self, msg_type, payload, exclude_peer=None):
+        """Thread-safe injection point for the synchronous core_node.py main thread"""
+        if self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._async_broadcast(msg_type, payload, exclude_peer), 
+                self.loop
+            )
+
+    def send_message(self, target_socket, msg_type, payload):
+        """Fallback for compatibility, though largely unused in the async rewrite"""
+        pass 
+
+    async def _async_broadcast(self, msg_type, payload, exclude_addr=None):
+        all_peers = list(self.inbound_peers.items()) + list(self.outbound_peers.items())
+        for addr, (reader, writer) in all_peers:
+            if addr != exclude_addr:
+                await self._async_send(writer, msg_type, payload)
+
+    async def _async_send(self, writer, msg_type, payload):
+        message = json.dumps({"type": msg_type, "payload": payload}).encode('utf-8')
+        header = f"{len(message):<10}".encode('utf-8')
+        try:
+            writer.write(header + message)
+            await writer.drain()
+        except Exception:
+            pass # Writer disconnected
+
+    async def _process_message(self, writer, addr, ip, message):
         msg_type = message.get("type")
         payload = message.get("payload")
 
-        if msg_type not in [MSG_GET_PEERS, MSG_PEERS]:
-            print(f"[P2P Node {self.port}] Received {msg_type} from {addr}: {payload}")
+        if msg_type not in [MSG_GET_PEERS, MSG_PEERS, MSG_GET_BLOCKS]:
+            print(f"[P2P Node {self.port}] Received {msg_type} from {addr}")
 
         if msg_type == MSG_HANDSHAKE:
-            peer_port = payload.get("port")
             peer_genesis = payload.get("genesis_hash")
-            
             if self.blockchain and self.blockchain.chain and peer_genesis:
                 our_genesis = self.blockchain.chain[0].hash
                 if peer_genesis != our_genesis:
-                    print(f"[P2P Node {self.port}] ❌ Genesis Hash mismatch! Peer: {peer_genesis[:8]}... Us: {our_genesis[:8]}... Dropping dirty connection.")
-                    self._remove_peer(conn, addr)
+                    self.ban_ip(ip, "Genesis Hash Mismatch (Imposter Chain)")
                     return
 
-            # If they tell us their port, make sure we know about them.
+            peer_port = payload.get("port")
             if peer_port:
-                self.add_peer(addr[0], peer_port)
+                # We have their port, they are a known peer now
+                pass
             
             peer_height = payload.get("height")
             if peer_height is not None and self.blockchain:
                 our_height = len(self.blockchain.chain) - 1
                 if peer_height > our_height:
-                    print(f"[P2P Node {self.port}] Peer is at height {peer_height}, we are at {our_height}. Requesting blocks...")
-                    self.send_message(conn, MSG_GET_BLOCKS, {"from_index": our_height + 1})
+                    await self._async_send(writer, MSG_GET_BLOCKS, {"from_index": our_height + 1})
                 elif peer_height < our_height:
-                    # Don't send a full block unless we're sure they need it.
-                    # A simple handshake response is enough for now.
-                    pass
+                    await self._async_send(writer, MSG_NEW_BLOCK, {"block": self.blockchain.chain[-1].to_dict()})
 
         elif msg_type == MSG_GET_PEERS:
-            # Share our entire address book of known peers
-            with self.peer_lock:
-                peers_to_share = [peer.to_dict() for peer in self.known_peers.values()]
-            self.send_message(conn, MSG_PEERS, {"peers": peers_to_share})
+            known_peers = []
+            for p_addr in list(self.inbound_peers.keys()) + list(self.outbound_peers.keys()):
+                p_ip, p_port = p_addr.split(":")
+                known_peers.append({"host": p_ip, "port": int(p_port)})
+            await self._async_send(writer, MSG_PEERS, {"peers": known_peers[:50]})
 
         elif msg_type == MSG_PEERS:
-            # Received a list of potential new peers. Add them to our address book.
             for peer_info in payload.get("peers", []):
-                peer_host = peer_info.get("host")
-                peer_port = peer_info.get("port")
-                if peer_host and peer_port:
-                    # Prevent adding ourselves
-                    try:
-                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        s.connect(('8.8.8.8', 80))
-                        my_ip = s.getsockname()[0]
-                        s.close()
-                    except:
-                        my_ip = "127.0.0.1"
-                    if (peer_host, peer_port) != (my_ip, self.port):
-                        self.add_peer(peer_host, peer_port)
+                p_host = peer_info.get("host")
+                p_port = peer_info.get("port")
+                if p_host and p_port and (p_host, p_port) != (self.host, self.port):
+                    asyncio.create_task(self._connect_outbound(p_host, p_port))
         
         elif msg_type == MSG_NEW_TX:
             tx_data = payload.get("transaction")
             if tx_data and self.mempool:
                 try:
-                    from wallet_transaction import Transaction, TransactionInput, TransactionOutput
                     inputs = [TransactionInput(i['utxo_tx_id'], i['utxo_output_index'], bytes.fromhex(i['signature']) if i['signature'] else None, i['pub_key']) for i in tx_data['inputs']]
                     outputs = [TransactionOutput(o['amount'], o['recipient_address']) for o in tx_data['outputs']]
                     new_tx = Transaction(inputs, outputs)
@@ -341,9 +287,9 @@ class P2PNode:
                         have_tx = any(t.tx_id == new_tx.tx_id for t in self.mempool.pending_transactions)
                         if not have_tx:
                             self.mempool.add_transaction(new_tx)
-                            self.broadcast_message(MSG_NEW_TX, payload, exclude_peer=conn)
+                            await self._async_broadcast(MSG_NEW_TX, payload, exclude_addr=addr)
                     else:
-                        print(f"[P2P Node {self.port}] Received invalid transaction {new_tx.tx_id[:8]}, not adding to mempool.")
+                        self.ban_ip(ip, "Invalid Transaction Math/Signature")
                 except Exception as e:
                     print(f"[P2P Node {self.port}] Error processing NEW_TX: {e}")
 
@@ -353,31 +299,29 @@ class P2PNode:
                 try:
                     from mempool_block import Block
                     block_hash = block_data.get("hash")
-                    have_it = any(b.hash == block_hash for b in self.blockchain.chain)
-                    if not have_it:
-                        new_block = Block(
-                            index=block_data["index"],
-                            previous_hash=block_data["previous_hash"],
-                            transactions=block_data["transactions"],
-                            semantic_payload=block_data["semantic_payload"],
-                            difficulty=block_data["difficulty"],
-                            nonce=block_data["nonce"]
-                        )
-                        new_block.timestamp = block_data["timestamp"]
-                        new_block.hash = block_data["hash"]
-                        
-                        our_height = len(self.blockchain.chain) - 1
-                        if new_block.index > our_height + 1:
-                            print(f"[P2P Node {self.port}] Received Block {new_block.index} from future (we are at {our_height}). Requesting sync...")
-                            self.send_message(conn, MSG_GET_BLOCKS, {"from_index": our_height + 1})
-                        elif self.blockchain.add_block(new_block):
-                            peer_miner = block_data['transactions'][0]['outputs'][0]['recipient_address'][:8] if block_data['transactions'] else "Unknown"
-                            print(f"[P2P Node {self.port}] 🌐 Block {new_block.index} accepted from network! Mined by Peer ({peer_miner})")
-                            self.broadcast_message(MSG_NEW_BLOCK, payload, exclude_peer=conn)
-                        else:
-                            print(f"[P2P Node {self.port}] ❌ Rejected invalid block {new_block.index} from network.")
-                except Exception as e:
-                    print(f"[P2P Node {self.port}] Error processing NEW_BLOCK: {e}")
+                    if any(b.hash == block_hash for b in self.blockchain.chain): return
+                    
+                    new_block = Block(
+                        index=block_data["index"],
+                        previous_hash=block_data["previous_hash"],
+                        transactions=block_data["transactions"],
+                        semantic_payload=block_data["semantic_payload"],
+                        difficulty=block_data["difficulty"],
+                        nonce=block_data["nonce"]
+                    )
+                    new_block.timestamp = block_data["timestamp"]
+                    new_block.hash = block_data["hash"]
+                    
+                    our_height = len(self.blockchain.chain) - 1
+                    if new_block.index > our_height + 1:
+                        await self._async_send(writer, MSG_GET_BLOCKS, {"from_index": our_height + 1})
+                    elif self.blockchain.add_block(new_block):
+                        print(f"[P2P Node {self.port}] 🌐 Block {new_block.index} accepted from network!")
+                        await self._async_broadcast(MSG_NEW_BLOCK, payload, exclude_addr=addr)
+                    else:
+                        print(f"[P2P Node {self.port}] ❌ Rejected invalid block {new_block.index} from network.")
+                except Exception:
+                    pass
 
         elif msg_type == MSG_GET_BLOCKS:
             from_index = payload.get("from_index", 0)
@@ -386,8 +330,7 @@ class P2PNode:
                 if from_index <= our_height:
                     end_index = min(from_index + 50, our_height + 1)
                     blocks_to_send = [b.to_dict() for b in self.blockchain.chain[from_index:end_index]]
-                    print(f"[P2P Node {self.port}] Sending blocks {from_index} to {end_index - 1} to {addr}")
-                    self.send_message(conn, MSG_BLOCKS, {"blocks": blocks_to_send})
+                    await self._async_send(writer, MSG_BLOCKS, {"blocks": blocks_to_send})
 
         elif msg_type == MSG_BLOCKS:
             blocks = payload.get("blocks", [])
@@ -411,19 +354,14 @@ class P2PNode:
                         
                     if self.blockchain.add_block(new_block):
                         added_count += 1
-                        print(f"[P2P Node {self.port}] 🔄 Synced Block {new_block.index} [{new_block.hash[:8]}]")
                     else:
-                        print(f"[P2P Node {self.port}] ❌ Failed to sync block {new_block.index}. Possible Fork Detected.")
                         our_height = len(self.blockchain.chain) - 1
-                        self.send_message(conn, MSG_RESOLVE_FORK, {"from_index": max(0, our_height - 20)})
+                        await self._async_send(writer, MSG_RESOLVE_FORK, {"from_index": max(0, our_height - 20)})
                         break
                 
                 if added_count > 0 and len(blocks) == 50:
                     our_height = len(self.blockchain.chain) - 1
-                    print(f"[P2P Node {self.port}] Requesting next batch of blocks from {our_height + 1}...")
-                    self.send_message(conn, MSG_GET_BLOCKS, {"from_index": our_height + 1})
-
-
+                    await self._async_send(writer, MSG_GET_BLOCKS, {"from_index": our_height + 1})
 
         elif msg_type == MSG_RESOLVE_FORK:
             from_index = payload.get("from_index", 0)
@@ -431,8 +369,7 @@ class P2PNode:
                 our_height = len(self.blockchain.chain) - 1
                 if from_index <= our_height:
                     blocks_to_send = [b.to_dict() for b in self.blockchain.chain[from_index:our_height + 1]]
-                    print(f"[P2P Node {self.port}] Sending fork resolution blocks {from_index} to {our_height} to {addr}")
-                    self.send_message(conn, MSG_FORK_BLOCKS, {"blocks": blocks_to_send})
+                    await self._async_send(writer, MSG_FORK_BLOCKS, {"blocks": blocks_to_send})
 
         elif msg_type == MSG_FORK_BLOCKS:
             blocks = payload.get("blocks", [])
@@ -453,6 +390,3 @@ class P2PNode:
                     candidate_blocks.append(new_block)
                 
                 self.blockchain.replace_chain(candidate_blocks)
-
-if __name__ == "__main__":
-    pass
