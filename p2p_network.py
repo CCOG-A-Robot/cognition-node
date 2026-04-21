@@ -7,7 +7,7 @@ from wallet_transaction import Transaction, TransactionInput, TransactionOutput
 
 # --- P2P Network Configuration ---
 SEED_NODES = [("24.144.104.66", 8000)] # DigitalOcean Main Seed Node
-PORT = 8000
+PORT = 8001
 
 # Beta Armor Scalability Limits
 MAX_INBOUND_CONNECTIONS = 500
@@ -25,6 +25,7 @@ MSG_GET_BLOCKS = "GET_BLOCKS"
 MSG_RESOLVE_FORK = "RESOLVE_FORK"
 MSG_FORK_BLOCKS = "FORK_BLOCKS"
 MSG_BLOCKS    = "BLOCKS"
+MSG_REJECT    = "REJECT"
 
 class P2PNode:
     def __init__(self, host="0.0.0.0", port=PORT, blockchain=None, mempool=None):
@@ -243,6 +244,8 @@ class P2PNode:
             if self.blockchain and self.blockchain.chain and peer_genesis:
                 our_genesis = self.blockchain.chain[0].hash
                 if peer_genesis != our_genesis:
+                    print(f"⚠️ [P2P Node {self.port}] Genesis mismatch with {addr}. They are on a deprecated chain.")
+                    await self._async_send(writer, MSG_REJECT, {"reason": "NETWORK RESET. The Vanguard Testnet has been updated. Please run `git pull`, delete your `blockchain.json`, and restart the node."})
                     self.ban_ip(ip, "Genesis Hash Mismatch (Imposter Chain)")
                     return
 
@@ -259,6 +262,12 @@ class P2PNode:
                 elif peer_height < our_height:
                     await self._async_send(writer, MSG_NEW_BLOCK, {"block": self.blockchain.chain[-1].to_dict()})
 
+        elif msg_type == MSG_REJECT:
+            reason = payload.get("reason", "Unknown")
+            print(f"\n❌ [P2P FATAL] Network connection rejected by peer: {reason}")
+            print(f"❌ Action Required: Update your code and restart.\n")
+            # We don't automatically kill the node, but we loudly warn the user.
+            
         elif msg_type == MSG_GET_PEERS:
             known_peers = []
             for p_addr in list(self.inbound_peers.keys()) + list(self.outbound_peers.keys()):

@@ -150,7 +150,7 @@ async def send_transaction(req: TransactionRequest):
         # Inject the TX into the running mining node via local socket (P2P port 8000)
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.connect(("127.0.0.1", 8000))
+            client_socket.connect(("127.0.0.1", 8001))
             
             payload = {"transaction": new_tx.to_dict()}
             message = json.dumps({"type": "NEW_TX", "payload": payload}).encode('utf-8')

@@ -159,8 +159,9 @@ def verify_network_rules(payload_dict, difficulty):
     block_string = json.dumps(payload_dict, sort_keys=True)
     h = cognitive_hash(block_string)
     
-    if not h.startswith('0' * difficulty):
-        return False, f"Failed: Difficulty {h}"
+    from mempool_block import check_hash_target
+    if not check_hash_target(h, difficulty):
+        return False, f"Failed: Difficulty {h} does not meet target {difficulty}"
         
     return True, h
 
@@ -235,7 +236,8 @@ def ai_miner(prompt, seed, difficulty, block_template=None, abort_check=None):
             block_string = json.dumps(block_template, sort_keys=True)
             current_hash = cognitive_hash(block_string)
             
-            if current_hash.startswith('0' * difficulty):
+            from mempool_block import check_hash_target
+            if check_hash_target(current_hash, difficulty):
                 elapsed = time.time() - start_time
                 logging.info(f"\n[AI Miner] 💎 BLOCK FOUND in {elapsed:.4f}s!")
                 return clean_guess, current_hash, nonce

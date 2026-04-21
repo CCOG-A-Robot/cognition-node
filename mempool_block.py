@@ -1,14 +1,30 @@
 import time
 import hashlib
 import json
+import os
 from wallet_transaction import UTXO, Transaction, TransactionInput, TransactionOutput
+
+# --- Robust Pathing ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_BLOCKCHAIN_FILE = os.path.join(SCRIPT_DIR, 'blockchain.json')
+# --------------------
+
 # We will import verify_network_rules inside the method to avoid circular imports 
 # or just re-implement the lightweight semantic check here for performance.
 
 # --- Blockchain Consensus Parameters ---
 TARGET_BLOCK_TIME = 150  # 2.5 minutes
 DIFFICULTY_ADJUSTMENT_INTERVAL = 10  # Every 10 blocks
-INITIAL_DIFFICULTY = 1
+INITIAL_DIFFICULTY = 1000.0
+
+def check_hash_target(hash_hex, difficulty):
+    """
+    Bitcoin-style proportional target validation.
+    Difficulty represents the expected number of hashes required.
+    """
+    MAX_TARGET = (1 << 256) - 1
+    target = int(MAX_TARGET / max(1.0, float(difficulty)))
+    return int(hash_hex, 16) <= target
 
 def generate_semantic_challenge(previous_block_hash, current_difficulty):
     """
@@ -157,14 +173,19 @@ class Blockchain:
             self.create_genesis_block()
             self.save_to_disk()
 
-    def save_to_disk(self, filename="blockchain.json"):
+    def save_to_disk(self, filename=None):
+        if filename is None:
+            filename = DEFAULT_BLOCKCHAIN_FILE
         try:
             with open(filename, "w") as f:
                 json.dump([block.to_dict() for block in self.chain], f, indent=4)
         except Exception as e:
             print(f"⚠️ Failed to save blockchain to disk: {e}")
 
-    def load_from_disk(self, filename="blockchain.json"):
+    def load_from_disk(self, filename=None):
+        if filename is None:
+            filename = DEFAULT_BLOCKCHAIN_FILE
+
         import os
         if not os.path.exists(filename):
             return False
@@ -206,13 +227,13 @@ class Blockchain:
         genesis_miner_address = "A_ROBOT_LIQUIDITY_ADDRESS_PLACEHOLDER"
         coinbase_output = TransactionOutput(amount=50, recipient_address=genesis_miner_address)
         coinbase_tx = Transaction(inputs=[], outputs=[coinbase_output])
-        coinbase_tx.timestamp = 1775863639 # Fixed Genesis TX timestamp (Vanguard Testnet)
+        coinbase_tx.timestamp = 1776700000 # Fixed Genesis TX timestamp (Vanguard Testnet - Reset 2)
         coinbase_tx.tx_id = hashlib.sha256(str(coinbase_tx.timestamp).encode('utf-8') + b"GENESIS_TX").hexdigest()
 
         # The Headline: "I am a robot" - A. Robot, March 2026
         genesis_message = "I am a robot"
-        genesis_block = Block(0, "0", [coinbase_tx.to_dict()], genesis_message, self.difficulty)
-        genesis_block.timestamp = 1775863639 # Fixed Genesis Block timestamp (Vanguard Testnet)
+        genesis_block = Block(0, "0", [coinbase_tx.to_dict()], genesis_message, float(self.difficulty))
+        genesis_block.timestamp = 1776700000 # Fixed Genesis Block timestamp (Vanguard Testnet - Reset 2)
         genesis_block.nonce = 0
         genesis_block.hash = genesis_block.calculate_hash() # Recalculate static hash
         self.chain.append(genesis_block)
@@ -323,21 +344,19 @@ class Blockchain:
         actual_time = last_block.timestamp - first_block_in_window.timestamp
         target_time = DIFFICULTY_ADJUSTMENT_INTERVAL * TARGET_BLOCK_TIME
 
-        # Step adjustment algorithm (+1 / -1) because hexadecimal zeros are exponential (16x per step)
+        # Proportional adjustment algorithm
         print(f"[Consensus] Window took {actual_time:.2f}s. Target: {target_time}s.")
         
-        new_difficulty = last_block.difficulty
+        # Guard against zero or negative time
+        if actual_time <= 0:
+            actual_time = 1
+            
+        ratio = target_time / actual_time
+        # Bound the ratio (max 4.0x increase, max 0.25x decrease) to prevent wild swings
+        ratio = max(0.25, min(ratio, 4.0))
         
-        # If blocks are arriving too fast (< 100 seconds per block on average)
-        if actual_time < (target_time * 0.66):
-            new_difficulty += 1
-            print(f"[Consensus] Network moving too fast. Stepping difficulty UP: {last_block.difficulty} -> {new_difficulty}")
-        # If blocks are arriving too slow (> 200 seconds per block on average)
-        elif actual_time > (target_time * 1.33):
-            new_difficulty = max(1, new_difficulty - 1)
-            print(f"[Consensus] Network moving too slow. Stepping difficulty DOWN: {last_block.difficulty} -> {new_difficulty}")
-        else:
-            print(f"[Consensus] Network speed optimal. Maintaining difficulty at {new_difficulty}.")
+        new_difficulty = float(last_block.difficulty) * ratio
+        print(f"[Consensus] Difficulty adjusted by {ratio:.2f}x: {last_block.difficulty:.2f} -> {new_difficulty:.2f}")
         
         return new_difficulty
 
@@ -359,8 +378,8 @@ class Blockchain:
         if block.hash != calc_hash:
             print(f"[Validation] Reject: Hash mismatch\n  Block Hash: {block.hash}\n  Calculated: {calc_hash}")
             return False
-        if not block.hash.startswith('0' * block.difficulty):
-            print(f"[Validation] Reject: Difficulty mismatch {block.hash}")
+        if not check_hash_target(block.hash, block.difficulty):
+            print(f"[Validation] Reject: Hash {block.hash} does not meet difficulty target {block.difficulty}")
             return False
 
         # 4. Check Semantic Rules (The "AI" proof)

@@ -15,7 +15,8 @@ mempool_instance = None
 p2p_node_instance = None
 node_wallet = None # The wallet for THIS node operator
 NODE_HOST = "0.0.0.0"
-NODE_PORT = 8000 # Default port, can be overridden by CLI
+API_PORT = 8000
+P2P_PORT = 8001
 
 def print_banner():
     print("==================================================")
@@ -250,18 +251,18 @@ def mining_thread_func(miner_wallet):
         print("\nShutting down Semantic Miner thread.")
 
 def node_cmd(args):
-    """Runs the full verification node (listen/sync/P2P)."""
+    """Runs the full verification node, API, and optional miner."""
     global blockchain_instance, mempool_instance, p2p_node_instance, node_wallet
     os.makedirs("wallets", exist_ok=True)
-    WALLET_FILE = f"wallets/wallet_{args.port}.pem"
+    WALLET_FILE = f"wallets/wallet_{P2P_PORT}.pem"
 
-    # Initialize blockchain and mempool (if not already done)
+    # Initialize blockchain and mempool
     if not blockchain_instance:
         blockchain_instance = Blockchain()
         mempool_instance = blockchain_instance.mempool
         print(f"[Node] Initialized Blockchain with {len(blockchain_instance.chain)} blocks and {len(blockchain_instance.utxo_set.utxos)} UTXOs.")
 
-    # If mining, ensure a wallet is loaded/created for the miner
+    # Load or create a wallet if mining is enabled
     if args.mine:
         if not os.path.exists(WALLET_FILE):
             print(f"[Node/Miner] Wallet not found at {WALLET_FILE}. Creating one...")
@@ -275,26 +276,42 @@ def node_cmd(args):
             node_wallet = Wallet(private_key_pem=private_key_pem)
             print(f"[Node/Miner] Loaded existing wallet from {WALLET_FILE} for mining.")
 
-    # Initialize and start P2P Node
-    print(f"🌍 Starting Cognition Core Node Daemon on {NODE_HOST}:{args.port}...")
-    p2p_node_instance = P2PNode(host=NODE_HOST, port=args.port, blockchain=blockchain_instance, mempool=mempool_instance)
+    # Start P2P Node in a background thread
+    print(f"🔗 Starting P2P Network Node on {NODE_HOST}:{P2P_PORT}...")
+    p2p_node_instance = P2PNode(host=NODE_HOST, port=P2P_PORT, blockchain=blockchain_instance, mempool=mempool_instance)
     p2p_node_instance.start()
-    print("Max Block Size: 20MB | Target Time: 2.5 Minutes")
-    print("Listening for incoming transactions and blocks on the P2P network...")
+    print("P2P Node listening for peer connections...")
 
-    # If mining flag is set, start the miner in a separate thread
+    # Start Miner in a background thread if enabled
     if args.mine:
         miner_thread = threading.Thread(target=mining_thread_func, args=(node_wallet,))
-        miner_thread.daemon = True # Allows main thread to exit even if this thread is running
+        miner_thread.daemon = True
         miner_thread.start()
 
-    try:
-        while True:
-            time.sleep(1) # Keep main thread alive for P2P threads
-    except KeyboardInterrupt:
-        print("\nShutting down Node Daemon.")
-        if p2p_node_instance:
-            p2p_node_instance.stop()
+    # Start FastAPI/Uvicorn API server in the main thread
+    print(f"🚀 Starting API & Web UI on http://{NODE_HOST}:{API_PORT}...")
+    import uvicorn
+    from node_api import app
+    
+    # This will block and run the web server
+    config = uvicorn.Config(app, host=NODE_HOST, port=API_PORT)
+    server = uvicorn.Server(config)
+    
+    # A bit of a hack to print the friendly message after Uvicorn's own startup messages
+    def print_startup_message():
+        time.sleep(1) # Give Uvicorn a moment to print its own lines
+        print("\n=======================================================")
+        print(f"✅ Web UI is now accessible at: http://127.0.0.1:{API_PORT}")
+        print("=======================================================\n")
+
+    threading.Thread(target=print_startup_message, daemon=True).start()
+    
+    server.run()
+
+    # Cleanup (this part will be reached on Ctrl+C)
+    print("\nShutting down services...")
+    if p2p_node_instance:
+        p2p_node_instance.stop()
 
 def broadcast_tx_from_api(recipient, amount, wallet_file):
     """Helper to process a TX from the API wrapper."""
@@ -368,21 +385,21 @@ def tx_cmd(args):
                 print(f"[Tx] Broadcasted transaction {new_tx.tx_id[:8]} to network.")
             else:
                 # CLI Mode: We are not running the node daemon here. 
-                # We need to act as a lightweight client and inject it into the local running node on port 8000.
+                # We need to act as a lightweight client and inject it into the local running node on port 8001 (P2P_PORT).
                 import socket
                 import json
                 try:
                     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    client_socket.connect(("127.0.0.1", args.port))
+                    client_socket.connect(("127.0.0.1", P2P_PORT))
                     
                     payload = {"transaction": new_tx.to_dict()}
                     message = json.dumps({"type": MSG_NEW_TX, "payload": payload}).encode('utf-8')
                     client_socket.sendall(f"{len(message):<10}".encode('utf-8') + message)
                     client_socket.close()
                     
-                    print(f"[Tx] Successfully injected transaction {new_tx.tx_id[:8]} into the local mining node's mempool via port {args.port}.")
+                    print(f"[Tx] Successfully injected transaction {new_tx.tx_id[:8]} into the local mining node's mempool via port {P2P_PORT}.")
                 except ConnectionRefusedError:
-                    print(f"❌ Could not connect to the local mining node on port {args.port}. Is the miner running?")
+                    print(f"❌ Could not connect to the local mining node on port {P2P_PORT}. Is the node running?")
         else:
             print(f"❌ Transaction {new_tx.tx_id[:8]} failed final validation.")
 
@@ -403,8 +420,7 @@ def main():
     wallet_parser.add_argument("--port", type=int, default=8000, help="Specify the node port to associate the wallet with")
 
     # Node Command
-    node_parser = subparsers.add_parser("node", help="Run the full verification node (listen/sync)")
-    node_parser.add_argument("--port", type=int, default=8000, help="Port to run the P2P node on")
+    node_parser = subparsers.add_parser("node", help="Run the full verification node (P2P + API)")
     node_parser.add_argument("--mine", action="store_true", help="Enable the miner on this node")
     
     # Mine Command (now deprecated)
@@ -416,8 +432,7 @@ def main():
     tx_parser.add_argument("--to", required=True, help="Receiver Public Key (Address)")
     tx_parser.add_argument("--amount", required=True, type=float, help="Amount of CCOG to send")
     tx_parser.add_argument("--fee", type=float, default=0.0, help="Transaction fee to incentivize miners")
-    tx_parser.add_argument("--wallet_file", default=None, help=f"Path to wallet .pem file")
-    tx_parser.add_argument("--port", type=int, default=8000, help="Node port to broadcast through")
+    tx_parser.add_argument("--wallet_file", default=f"wallets/wallet_{P2P_PORT}.pem", help=f"Path to wallet .pem file")
 
     args = parser.parse_args()
 
@@ -427,7 +442,7 @@ def main():
 
     # Update default wallet file if NODE_PORT is known
     if args.command == "tx" and args.wallet_file is None:
-        args.wallet_file = f"wallets/wallet_{NODE_PORT}.pem"
+        args.wallet_file = f"wallets/wallet_{P2P_PORT}.pem"
 
     # Initialize core components once at the start of main, if not already done by node_cmd
     if not blockchain_instance:
