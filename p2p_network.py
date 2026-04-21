@@ -241,6 +241,16 @@ class P2PNode:
 
         if msg_type == MSG_HANDSHAKE:
             peer_genesis = payload.get("genesis_hash")
+            if not peer_genesis:
+                print(f"⚠️ [P2P Node {self.port}] Handshake missing genesis_hash from {addr}. They are on deprecated software.")
+                # Send the standard reject for new nodes
+                await self._async_send(writer, MSG_REJECT, {"reason": "NETWORK RESET. You are using deprecated software. Please run `git pull`, delete your `blockchain.json`, and restart the node."})
+                # Send a crafted unknown message type to force old nodes to print the warning to their terminal
+                alert_msg = "\n\n=======================================================\n❌ FATAL: YOU ARE ON DEPRECATED SOFTWARE.\n❌ PLEASE RUN 'git pull' AND DELETE 'blockchain.json'\n=======================================================\n"
+                await self._async_send(writer, alert_msg, {})
+                self.ban_ip(ip, "Deprecated Software (Missing Genesis Hash)")
+                return
+
             if self.blockchain and self.blockchain.chain and peer_genesis:
                 our_genesis = self.blockchain.chain[0].hash
                 if peer_genesis != our_genesis:
