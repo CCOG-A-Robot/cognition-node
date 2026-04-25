@@ -284,6 +284,21 @@ def node_cmd(args):
 
     # Start Miner in a background thread if enabled
     if args.mine:
+        # Wait to ensure P2P node has a chance to connect to at least one seed node
+        print("⏳ Waiting for P2P network synchronization before starting miner...")
+        sync_wait_time = 15
+        while sync_wait_time > 0:
+            if p2p_node_instance and (len(p2p_node_instance.inbound_peers) > 0 or len(p2p_node_instance.outbound_peers) > 0):
+                print(f"✅ Connected to {len(p2p_node_instance.inbound_peers) + len(p2p_node_instance.outbound_peers)} peers. Proceeding to mine.")
+                break
+            time.sleep(1)
+            sync_wait_time -= 1
+            
+        if sync_wait_time == 0:
+            print("⚠️ WARNING: Could not connect to any peers after 15 seconds.")
+            print("⚠️ The miner will start, but you may be mining on an isolated fork!")
+            print("⚠️ Please check your firewall and internet connection.")
+            
         miner_thread = threading.Thread(target=mining_thread_func, args=(node_wallet,))
         miner_thread.daemon = True
         miner_thread.start()

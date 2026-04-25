@@ -125,7 +125,9 @@ class P2PNode:
 
         while self.running:
             for host, port in SEED_NODES:
-                if host != my_ip and (host, port) != (self.host, self.port):
+                # Removed the strict my_ip check as it can falsely trigger on NAT/VPN setups.
+                # Only prevent obvious 0.0.0.0 loopbacks if ports match.
+                if (host, port) != (self.host, self.port):
                     await self._connect_outbound(host, port)
             
             await asyncio.sleep(15) # Check every 15 seconds
