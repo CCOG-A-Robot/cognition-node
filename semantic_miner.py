@@ -69,7 +69,7 @@ def get_llm_instance():
             sys.exit(1) # Exit with an error code if model fails to load
     return _llm_instance
 
-def call_deterministic_llm(prompt, seed, temperature=0.7, max_tokens=60): # Reduced max_tokens for speed
+def call_deterministic_llm(prompt, seed, temperature=0.0, max_tokens=60): # Set temperature to 0.0 for strict adherence to rules
     """
     Function to call a locally hosted, deterministic LLM using llama-cpp-python.
     The 'seed' parameter influences the LLM's generation to be consistent across nodes.
@@ -195,14 +195,12 @@ def ai_miner(prompt, seed, difficulty, block_template=None, abort_check=None):
 
         ai_attempts += 1
         
-        # When temperature is 0, we can't just append a counter to the prompt and expect wildly different results,
-        # so we also slightly mutate the prompt text on failures to force the LLM down a new attention path.
-        if ai_attempts > 1:
-            mining_prompt = f"{prompt} Try again, phrasing it differently. (Attempt: {ai_attempts})"
-        else:
-            mining_prompt = prompt
-
-        semantic_guess = call_deterministic_llm(mining_prompt, seed, temperature=0.7, max_tokens=100)
+        # Option B: The Seed Shift. Keep the prompt static to utilize KV caching (10ms eval),
+        # but increment the mathematical seed to force a new deterministic trajectory.
+        dynamic_seed = seed + ai_attempts
+        
+        # Hard-lock temperature to 0.0. The seed shift provides 100% of the variance now.
+        semantic_guess = call_deterministic_llm(prompt, dynamic_seed, temperature=0.0, max_tokens=100)
         clean_guess = extract_sentence_from_llm_output(semantic_guess)
         
         if not clean_guess: continue
