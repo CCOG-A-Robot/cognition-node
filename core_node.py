@@ -289,24 +289,32 @@ def node_cmd(args):
         miner_thread.start()
 
     # Start FastAPI/Uvicorn API server in the main thread
-    print(f"🚀 Starting API & Web UI on http://{NODE_HOST}:{API_PORT}...")
-    import uvicorn
-    from node_api import app
-    
-    # This will block and run the web server
-    config = uvicorn.Config(app, host=NODE_HOST, port=API_PORT)
-    server = uvicorn.Server(config)
-    
-    # A bit of a hack to print the friendly message after Uvicorn's own startup messages
-    def print_startup_message():
-        time.sleep(1) # Give Uvicorn a moment to print its own lines
-        print("\n=======================================================")
-        print(f"✅ Web UI is now accessible at: http://127.0.0.1:{API_PORT}")
-        print("=======================================================\n")
+    if os.environ.get("DISABLE_API_SERVER") != "true":
+        print(f"🚀 Starting API & Web UI on http://{NODE_HOST}:{API_PORT}...")
+        import uvicorn
+        from node_api import app
+        
+        # This will block and run the web server
+        config = uvicorn.Config(app, host=NODE_HOST, port=API_PORT)
+        server = uvicorn.Server(config)
+        
+        # A bit of a hack to print the friendly message after Uvicorn's own startup messages
+        def print_startup_message():
+            time.sleep(1) # Give Uvicorn a moment to print its own lines
+            print("\n=======================================================")
+            print(f"✅ Web UI is now accessible at: http://127.0.0.1:{API_PORT}")
+            print("=======================================================\n")
 
-    threading.Thread(target=print_startup_message, daemon=True).start()
-    
-    server.run()
+        threading.Thread(target=print_startup_message, daemon=True).start()
+        
+        server.run()
+    else:
+        print("🛡️ API Server disabled via environment variable. Running in Headless P2P Mode.")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
 
     # Cleanup (this part will be reached on Ctrl+C)
     print("\nShutting down services...")
