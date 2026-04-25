@@ -173,7 +173,9 @@ def ai_miner(prompt, seed, difficulty, block_template=None, abort_check=None):
     
     start_time = time.time()
     ai_attempts = 0
-    
+    clean_guess = "" # Initialize before the loop
+    words_check = [] # Initialize before the loop
+
     # If no template provided (standalone mode), create a dummy one
     if block_template is None:
         block_template = {
@@ -196,17 +198,33 @@ def ai_miner(prompt, seed, difficulty, block_template=None, abort_check=None):
         ai_attempts += 1
         
         # Option A Sledgehammer: Temp 0 ignores seeds. We MUST mutate the prompt to break the loop.
-        # We need to make the mutation unpredictable to the model to break the greedy path.
-        # Prepending works, but let's also dynamically inject a synonym request to force a totally new semantic tree.
-        synonym_hints = ["(Try focusing on the visual aspect)", "(Rephrase entirely)", "(Use a different sentence structure)", "(Start the sentence differently)", "(Be more literal)", "(Be more abstract)"]
-        hint = synonym_hints[ai_attempts % len(synonym_hints)]
+        # If we hit this point, the LLM is stubbornly refusing to use the exact keyword or ignoring length.
+        # We need to make the mutation unpredictable AND force the keyword.
+        # Let's add a post-script explicitly reminding it of the failure.
         
-        mining_prompt = f"[Attempt {ai_attempts}] {hint} {prompt}" if ai_attempts > 1 else prompt
+        failure_reason = ""
+        if ai_attempts > 1:
+            if not clean_guess:
+                failure_reason = "(You failed to provide a valid sentence.)"
+            elif len(words_check) < 5 or len(words_check) > 15:
+                failure_reason = f"(Your last attempt was {len(words_check)} words. It MUST be between 5 and 15.)"
+            elif expected_keyword and expected_keyword.lower() not in clean_guess.lower():
+                failure_reason = f"(Your last attempt missed the required word. You MUST use the EXACT word '{expected_keyword}'. Do not use variations like 'fiery'.)"
+
+        mining_prompt = f"[Attempt {ai_attempts}] {failure_reason} {prompt}" if ai_attempts > 1 else prompt
         
-        # We can increase the temperature slightly to 0.2 to allow *some* variance while remaining highly literal
-        semantic_guess = call_deterministic_llm(mining_prompt, seed, temperature=0.2, max_tokens=100)
+        # We can increase the temperature slightly to 0.4 to allow more variance. 
+        # The prompt instruction will act as the rigid constraint, not the math.
+        semantic_guess = call_deterministic_llm(mining_prompt, seed, temperature=0.7, max_tokens=100)
+        
+        # --- FIX: Define variables BEFORE checking them in the next loop iteration ---
         clean_guess = extract_sentence_from_llm_output(semantic_guess)
-        
+        words_check = []
+        if clean_guess:
+            import re
+            words_check = re.sub(r'[^\w\s]', '', clean_guess.lower()).split()
+        # ---------------------------------------------------------------------------
+
         if not clean_guess: continue
 
         import re
