@@ -196,11 +196,15 @@ def ai_miner(prompt, seed, difficulty, block_template=None, abort_check=None):
         ai_attempts += 1
         
         # Option A Sledgehammer: Temp 0 ignores seeds. We MUST mutate the prompt to break the loop.
-        # Prepending the attempt breaks the KV cache from token 0, forcing a full attention recalculation.
-        mining_prompt = f"[Attempt {ai_attempts}] {prompt}" if ai_attempts > 1 else prompt
+        # We need to make the mutation unpredictable to the model to break the greedy path.
+        # Prepending works, but let's also dynamically inject a synonym request to force a totally new semantic tree.
+        synonym_hints = ["(Try focusing on the visual aspect)", "(Rephrase entirely)", "(Use a different sentence structure)", "(Start the sentence differently)", "(Be more literal)", "(Be more abstract)"]
+        hint = synonym_hints[ai_attempts % len(synonym_hints)]
         
-        # Hard-lock temperature to 0.0 for strict rule adherence.
-        semantic_guess = call_deterministic_llm(mining_prompt, seed, temperature=0.0, max_tokens=100)
+        mining_prompt = f"[Attempt {ai_attempts}] {hint} {prompt}" if ai_attempts > 1 else prompt
+        
+        # We can increase the temperature slightly to 0.2 to allow *some* variance while remaining highly literal
+        semantic_guess = call_deterministic_llm(mining_prompt, seed, temperature=0.2, max_tokens=100)
         clean_guess = extract_sentence_from_llm_output(semantic_guess)
         
         if not clean_guess: continue
