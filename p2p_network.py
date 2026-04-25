@@ -6,7 +6,7 @@ import socket
 from wallet_transaction import Transaction, TransactionInput, TransactionOutput
 
 # --- P2P Network Configuration ---
-SEED_NODES = [("24.144.104.66", 8000)] # DigitalOcean Main Seed Node
+SEED_NODES = [("24.144.104.66", 8001)] # DigitalOcean Main Seed Node (P2P Port)
 PORT = 8001
 
 # Beta Armor Scalability Limits
