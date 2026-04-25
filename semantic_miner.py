@@ -195,12 +195,12 @@ def ai_miner(prompt, seed, difficulty, block_template=None, abort_check=None):
 
         ai_attempts += 1
         
-        # Option B: The Seed Shift. Keep the prompt static to utilize KV caching (10ms eval),
-        # but increment the mathematical seed to force a new deterministic trajectory.
-        dynamic_seed = seed + ai_attempts
+        # Option A Sledgehammer: Temp 0 ignores seeds. We MUST mutate the prompt to break the loop.
+        # Prepending the attempt breaks the KV cache from token 0, forcing a full attention recalculation.
+        mining_prompt = f"[Attempt {ai_attempts}] {prompt}" if ai_attempts > 1 else prompt
         
-        # Hard-lock temperature to 0.0. The seed shift provides 100% of the variance now.
-        semantic_guess = call_deterministic_llm(prompt, dynamic_seed, temperature=0.0, max_tokens=100)
+        # Hard-lock temperature to 0.0 for strict rule adherence.
+        semantic_guess = call_deterministic_llm(mining_prompt, seed, temperature=0.0, max_tokens=100)
         clean_guess = extract_sentence_from_llm_output(semantic_guess)
         
         if not clean_guess: continue
