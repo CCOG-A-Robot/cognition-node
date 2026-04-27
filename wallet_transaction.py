@@ -57,7 +57,10 @@ class TransactionOutput:
     Represents an output of a transaction, creating a new UTXO.
     """
     def __init__(self, amount, recipient_address):
-        self.amount = amount
+        if not isinstance(amount, (int, float)) or amount <= 0:
+            raise ValueError("Transaction output amount must be a positive number.")
+        # Enforce 8 decimal places at the point of creation
+        self.amount = round(float(amount), 8)
         self.recipient_address = recipient_address
 
     def to_dict(self):
@@ -243,8 +246,15 @@ class Transaction:
 
             input_total += referenced_utxo.amount
 
-        # 2. Sum output amounts
+        # 2. Sum output amounts and check for validity
         for tx_output in self.outputs:
+            if tx_output.amount <= 0:
+                print(f"[Reject] Transaction {self.tx_id[:8]} contains an invalid (zero or negative) output amount.")
+                return False
+            # Check for excessive decimal places as a consensus rule
+            if len(str(tx_output.amount).split('.')[-1]) > 8:
+                print(f"[Reject] Transaction {self.tx_id[:8]} output amount {tx_output.amount} exceeds 8 decimal places.")
+                return False
             output_total += tx_output.amount
 
         # 3. Check input_total >= output_total (inputs must cover outputs + fee)

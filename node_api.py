@@ -6,6 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import core_node
 import os
+import time
+from mempool_block import DEFAULT_BLOCKCHAIN_FILE # Import the canonical file path
+
+# --- Globals for the smart reloading mechanism ---
+_last_chain_mod_time = 0
+# The blockchain_instance is now managed by the smart_reload function.
 
 app = FastAPI(title="Cognition Coin Node API")
 
@@ -20,9 +26,34 @@ app.add_middleware(
 
 security = HTTPBearer()
 
-import os
-if os.path.exists("static"):
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+def smart_reload_blockchain():
+    """
+    Checks the blockchain file's modification time. If it's newer, it reloads 
+    the global instance from disk. This is fast and ensures data is always fresh.
+    """
+    global _last_chain_mod_time, core_node
+    
+    try:
+        current_mod_time = os.path.getmtime(DEFAULT_BLOCKCHAIN_FILE)
+        
+        if current_mod_time > _last_chain_mod_time:
+            print(f"[API] Blockchain file has changed. Reloading from disk...")
+            core_node.blockchain_instance = core_node.Blockchain()
+            _last_chain_mod_time = current_mod_time
+            print("[API] Reload complete.")
+            
+    except FileNotFoundError:
+        print("[API] Blockchain file not found. Using initial in-memory instance.")
+        if not core_node.blockchain_instance:
+             core_node.blockchain_instance = core_node.Blockchain()
+        _last_chain_mod_time = time.time()
+        
+    except Exception as e:
+        print(f"[API] Error during smart reload: {e}")
+        pass
+        
+    return core_node.blockchain_instance
+
 
 @app.get("/")
 async def serve_dashboard():
@@ -34,10 +65,8 @@ async def serve_dashboard():
 
 @app.on_event("startup")
 async def startup_event():
-    if not core_node.blockchain_instance:
-        print("[API] Initializing Blockchain instance from disk...")
-        core_node.blockchain_instance = core_node.Blockchain()
-        core_node.mempool_instance = core_node.blockchain_instance.mempool
+    # Perform an initial load on startup
+    smart_reload_blockchain()
 
 
 import secrets
@@ -90,19 +119,17 @@ class TransactionRequest(BaseModel):
 
 @app.get("/blockchain/info", dependencies=[Depends(verify_token)])
 async def get_blockchain_info():
-    if not core_node.blockchain_instance:
-        raise HTTPException(status_code=503, detail="Blockchain not initialized")
+    blockchain = smart_reload_blockchain()
     return {
-        "height": len(core_node.blockchain_instance.chain),
-        "difficulty": core_node.blockchain_instance.get_difficulty(),
-        "utxo_count": len(core_node.blockchain_instance.utxo_set.utxos)
+        "height": len(blockchain.chain),
+        "difficulty": blockchain.get_difficulty(),
+        "utxo_count": len(blockchain.utxo_set.utxos)
     }
 
 
 @app.get("/wallet/list", dependencies=[Depends(verify_token)])
 async def list_wallets():
-    if not core_node.blockchain_instance:
-        raise HTTPException(status_code=503, detail="Blockchain not initialized")
+    blockchain = smart_reload_blockchain()
     import glob
     from wallet_transaction import Wallet
     wallets = []
@@ -110,7 +137,7 @@ async def list_wallets():
         try:
             with open(f, "r") as key_file:
                 w = Wallet(private_key_pem=key_file.read())
-                bal = core_node.blockchain_instance.utxo_set.get_balance(w.public_key)
+                bal = blockchain.utxo_set.get_balance(w.public_key)
                 wallets.append({"file": f, "address": w.public_key, "balance": bal})
         except Exception:
             pass
@@ -119,15 +146,13 @@ async def list_wallets():
 
 @app.get("/wallet/balance/{address}", dependencies=[Depends(verify_token)])
 async def get_balance(address: str):
-    if not core_node.blockchain_instance:
-        raise HTTPException(status_code=503, detail="Blockchain not initialized")
-    balance = core_node.blockchain_instance.utxo_set.get_balance(address)
+    blockchain = smart_reload_blockchain()
+    balance = blockchain.utxo_set.get_balance(address)
     return {"address": address, "balance": balance}
 
 @app.post("/transaction/send", dependencies=[Depends(verify_token)])
 async def send_transaction(req: TransactionRequest):
-    if not core_node.blockchain_instance:
-        raise HTTPException(status_code=503, detail="Blockchain not initialized")
+    blockchain = smart_reload_blockchain()
     
     try:
         import os, socket, json
@@ -141,13 +166,13 @@ async def send_transaction(req: TransactionRequest):
             private_key_pem = f.read()
         wallet = Wallet(private_key_pem=private_key_pem)
         
-        # Create TX using the API's local copy of the blockchain state
-        new_tx = wallet.create_transaction(req.recipient, req.amount, core_node.blockchain_instance.utxo_set)
+        # Create TX using a fresh copy of the blockchain state
+        new_tx = wallet.create_transaction(req.recipient, req.amount, blockchain.utxo_set)
         
-        if not new_tx.is_valid(core_node.blockchain_instance.utxo_set):
+        if not new_tx.is_valid(blockchain.utxo_set):
             raise Exception("Transaction validation failed.")
             
-        # Inject the TX into the running mining node via local socket (P2P port 8000)
+        # Inject the TX into the running mining node via local socket (P2P port 8001)
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             client_socket.connect(("127.0.0.1", 8001))
@@ -157,7 +182,7 @@ async def send_transaction(req: TransactionRequest):
             client_socket.sendall(f"{len(message):<10}".encode('utf-8') + message)
             client_socket.close()
         except ConnectionRefusedError:
-            raise Exception("Could not connect to local mining daemon on port 8000. Is it running?")
+            raise Exception("Could not connect to local mining daemon on port 8001. Is it running?")
             
         return {"status": "success", "tx_id": new_tx.tx_id, "message": "Transaction injected into mempool"}
     except Exception as e:
@@ -165,48 +190,56 @@ async def send_transaction(req: TransactionRequest):
 
 @app.get("/block/{index}", dependencies=[Depends(verify_token)])
 async def get_block(index: int):
-    if not core_node.blockchain_instance or index >= len(core_node.blockchain_instance.chain):
+    blockchain = smart_reload_blockchain()
+    if index >= len(blockchain.chain):
         raise HTTPException(status_code=404, detail="Block not found")
-    return core_node.blockchain_instance.chain[index].to_dict()
+    return blockchain.chain[index].to_dict()
 
 @app.get("/blockchain/history", dependencies=[Depends(verify_token)])
-async def get_recent_history(limit: int = 5, address: str = None):
-    if not core_node.blockchain_instance:
-        raise HTTPException(status_code=503, detail="Blockchain not initialized")
+async def get_recent_history(limit: int = 10, address: str = None):
+    blockchain = smart_reload_blockchain()
     
     history = []
-    # Traverse blocks backwards
-    for block in reversed(core_node.blockchain_instance.chain):
+    
+    # Traverse blocks backwards for recent history
+    for block in reversed(blockchain.chain):
         for tx in reversed(block.transactions):
             if not isinstance(tx, dict):
-                tx_dict = tx.to_dict()
-            else:
-                tx_dict = tx
+                tx = tx.to_dict()
             
-            is_coinbase = len(tx_dict.get("inputs", [])) == 0
+            tx_id = tx.get("tx_id", "Unknown")
+            timestamp = tx.get("timestamp", block.timestamp)
             
-            # If address is specified, filter by it
-            if address:
-                involved = False
-                for tx_in in tx_dict.get("inputs", []):
-                    if tx_in.get("pub_key") == address:
-                        involved = True
-                        break
-                for tx_out in tx_dict.get("outputs", []):
-                    if tx_out.get("recipient_address") == address:
-                        involved = True
-                        break
-                if not involved:
-                    continue
-                
-            history.append({
-                "tx_id": tx_dict.get("tx_id"),
-                "timestamp": tx_dict.get("timestamp", block.timestamp),
-                "block": block.index,
-                "inputs_count": len(tx_dict.get("inputs", [])),
-                "outputs_count": len(tx_dict.get("outputs", [])),
-                "is_coinbase": is_coinbase
-            })
+            # If no address is specified, just show all transactions
+            if not address:
+                history.append({
+                    "type": "MINED" if not tx.get("inputs") else "TRANSFER",
+                    "amount": sum(o.get("amount", 0) for o in tx.get("outputs", [])),
+                    "tx_id": tx_id,
+                    "block": block.index,
+                    "time": timestamp
+                })
+                if len(history) >= limit:
+                    return {"transactions": history}
+                continue
+
+            # If address is specified, determine its role
+            is_sender = any(tx_in.get("pub_key") == address for tx_in in tx.get("inputs", []))
+            
+            received_amount = sum(tx_out.get("amount", 0) for tx_out in tx.get("outputs", []) if tx_out.get("recipient_address") == address)
+            
+            if is_sender:
+                sent_to_others = sum(tx_out.get("amount", 0) for tx_out in tx.get("outputs", []) if tx_out.get("recipient_address") != address)
+                if sent_to_others > 0:
+                    history.append({"type": "SENT", "amount": sent_to_others, "tx_id": tx_id, "block": block.index, "time": timestamp})
+
+            elif received_amount > 0:
+                tx_type = "MINED" if not tx.get("inputs") else "RECEIVED"
+                history.append({"type": tx_type, "amount": received_amount, "tx_id": tx_id, "block": block.index, "time": timestamp})
+
             if len(history) >= limit:
-                return {"transactions": history}
+                break
+        if len(history) >= limit:
+            break
+            
     return {"transactions": history}

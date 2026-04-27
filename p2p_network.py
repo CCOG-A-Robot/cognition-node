@@ -308,8 +308,10 @@ class P2PNode:
                         have_tx = any(t.tx_id == new_tx.tx_id for t in self.mempool.pending_transactions)
                         if not have_tx:
                             self.mempool.add_transaction(new_tx)
+                            print(f"[P2P Node {self.port}] ✅ Accepted and added new TX {new_tx.tx_id[:8]} to mempool.")
                             await self._async_broadcast(MSG_NEW_TX, payload, exclude_addr=addr)
                     else:
+                        print(f"[P2P Node {self.port}] ❌ Rejected invalid transaction {new_tx.tx_id[:8]} from peer {ip}.")
                         self.ban_ip(ip, "Invalid Transaction Math/Signature")
                 except Exception as e:
                     print(f"[P2P Node {self.port}] Error processing NEW_TX: {e}")

@@ -431,6 +431,49 @@ def tx_cmd(args):
     except Exception as e:
         print(f"❌ An unexpected error occurred: {e}")
 
+def mempool_cmd(args):
+    """Inspects the current mempool (pending transactions)."""
+    global blockchain_instance, mempool_instance
+
+    if not mempool_instance:
+        print("[Mempool] Node not fully initialized. Please run 'node' command first.")
+        return
+
+    print(f"\n--- Current Mempool ({len(mempool_instance.pending_transactions)} transactions) ---")
+    if not mempool_instance.pending_transactions:
+        print("  Mempool is empty.")
+        return
+
+    count = 0
+    for tx in mempool_instance.pending_transactions:
+        if count >= args.limit:
+            break
+
+        # We need to get the UTXO from the current UTXO set to get its amount
+        try:
+            input_sum = 0
+            for tx_input in tx.inputs:
+                utxo = blockchain_instance.utxo_set.get_utxo(tx_input.utxo_tx_id, tx_input.utxo_output_index)
+                if utxo:
+                    input_sum += utxo.amount
+        except Exception:
+            input_sum = 0 # Could fail if UTXO is not found, handle gracefully
+
+        output_sum = sum(tx_out.amount for tx_out in tx.outputs)
+        fee = input_sum - output_sum
+
+        print(f"TX ID: {tx.tx_id[:16]}...")
+        print(f"  Inputs: {len(tx.inputs)}")
+        for tx_in in tx.inputs:
+            print(f"    - From: {tx_in.pub_key[:8]}... (UTXO: {tx_in.utxo_tx_id[:8]}:{tx_in.utxo_output_index})")
+        print(f"  Outputs: {len(tx.outputs)}")
+        for tx_out in tx.outputs:
+            print(f"    - To: {tx_out.recipient_address[:8]}... Amount: {tx_out.amount:.8f} CCOG")
+        print(f"  Fee: {fee:.8f} CCOG")
+        print("------------------------------")
+        count += 1
+    print("\n")
+
 def main():
     global blockchain_instance, mempool_instance, node_wallet, NODE_PORT
 
@@ -456,6 +499,10 @@ def main():
     tx_parser.add_argument("--amount", required=True, type=float, help="Amount of CCOG to send")
     tx_parser.add_argument("--fee", type=float, default=0.0, help="Transaction fee to incentivize miners")
     tx_parser.add_argument("--wallet_file", default=f"wallets/wallet_{P2P_PORT}.pem", help=f"Path to wallet .pem file")
+
+    # Mempool Command
+    mempool_parser = subparsers.add_parser("mempool", help="Inspect the current mempool")
+    mempool_parser.add_argument("--limit", type=int, default=10, help="Limit number of transactions to display")
 
     args = parser.parse_args()
 
@@ -484,9 +531,12 @@ def main():
         mine_cmd(args)
     elif args.command == "tx":
         tx_cmd(args)
+    elif args.command == "mempool":
+        mempool_cmd(args)
     else:
         print_banner()
         parser.print_help()
 
 if __name__ == "__main__":
     main()
+
