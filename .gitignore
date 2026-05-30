@@ -19,6 +19,9 @@ certbot*/
 # Lock files
 *.lock
 
+# TLS certs (self-signed, generated per node)
+certs/
+
 # Agent and Internal Metadata
 memory/
 *.md

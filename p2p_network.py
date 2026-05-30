@@ -3,7 +3,52 @@ import json
 import time
 import threading
 import socket
+import os
+import ssl
 from wallet_transaction import Transaction, TransactionInput, TransactionOutput
+
+# --- SSL/TLS Certificate Auto-Generation ---
+def _generate_self_signed_cert(cert_path, key_path):
+    """
+    Generate a self-signed TLS certificate for P2P encryption.
+    Uses the `cryptography` library (already a dependency for wallet encryption).
+    Cert is valid for 1 year, self-signed, with a wildcard SAN for IP connections.
+    """
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    import datetime
+    import ipaddress
+    
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+        x509.NameAttribute(NameOID.COMMON_NAME, "Cognition Coin Testnet Node"),
+    ])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+        .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.IPv4Address("0.0.0.0"))]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    os.makedirs(os.path.dirname(cert_path), exist_ok=True)
+    with open(key_path, "wb") as f:
+        f.write(key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        ))
+    with open(cert_path, "wb") as f:
+        f.write(cert.public_bytes(serialization.Encoding.PEM))
 
 # --- P2P Network Configuration ---
 SEED_NODES = [("24.144.104.66", 8001)] # DigitalOcean Main Seed Node (P2P Port)
@@ -41,6 +86,36 @@ class P2PNode:
         self.blockchain = blockchain
         self.mempool = mempool
         
+        # SSL/TLS Setup — auto-generate cert if missing
+        self.ssl_context = None
+        cert_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "certs")
+        os.makedirs(cert_dir, exist_ok=True)
+        cert_path = os.path.join(cert_dir, "p2p_cert.pem")
+        key_path = os.path.join(cert_dir, "p2p_key.pem")
+        
+        if not os.path.exists(cert_path) or not os.path.exists(key_path):
+            print(f"[P2P Node {self.port}] 🔐 Generating self-signed TLS certificate...")
+            _generate_self_signed_cert(cert_path, key_path)
+        
+        try:
+            self.ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            self.ssl_context.load_cert_chain(cert_path, key_path)
+            self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+            # Allow self-signed certs for testnet discovery
+            self.ssl_context.check_hostname = False
+            self.ssl_context.verify_mode = ssl.CERT_NONE
+            
+            # Client context for outbound connections
+            self.ssl_client_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+            self.ssl_client_context.minimum_version = ssl.TLSVersion.TLSv1_2
+            self.ssl_client_context.check_hostname = False
+            self.ssl_client_context.verify_mode = ssl.CERT_NONE
+            print(f"[P2P Node {self.port}] 🔒 TLS encryption enabled (self-signed, testnet mode)")
+        except Exception as e:
+            print(f"[P2P Node {self.port}] ⚠️ Could not initialize TLS: {e}. Running without encryption.")
+            self.ssl_context = None
+            self.ssl_client_context = None
+        
         # Asyncio Event Loop running in a dedicated thread
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self._start_loop, daemon=True)
@@ -50,7 +125,10 @@ class P2PNode:
         self.loop.run_until_complete(self._async_start())
 
     def start(self):
-        print(f"[P2P Node {self.port}] 🛡️ Initializing Asynchronous Engine (Beta Armor)...")
+        if self.ssl_context:
+            print(f"[P2P Node {self.port}] 🛡️ Initializing Asynchronous Engine (Beta Armor + TLS)...")
+        else:
+            print(f"[P2P Node {self.port}] 🛡️ Initializing Asynchronous Engine (Beta Armor, UNENCRYPTED)...")
         self.thread.start()
 
     def stop(self):
@@ -60,11 +138,19 @@ class P2PNode:
             self.loop.call_soon_threadsafe(self.loop.stop)
 
     async def _async_start(self):
-        server = await asyncio.start_server(
-            self._handle_inbound_connection, self.host, self.port
-        )
-        print(f"[P2P Node {self.port}] Listening asynchronously on {self.host}:{self.port}")
-        print(f"[P2P Node {self.port}] Limits: Inbound={MAX_INBOUND_CONNECTIONS}, Outbound={MAX_OUTBOUND_CONNECTIONS}, MaxPayload=20MB")
+        if self.ssl_context:
+            server = await asyncio.start_server(
+                self._handle_inbound_connection, self.host, self.port,
+                ssl=self.ssl_context
+            )
+            print(f"[P2P Node {self.port}] 🔒 Listening securely (TLS) on {self.host}:{self.port}")
+            print(f"[P2P Node {self.port}] Limits: Inbound={MAX_INBOUND_CONNECTIONS}, Outbound={MAX_OUTBOUND_CONNECTIONS}, MaxPayload=20MB")
+        else:
+            server = await asyncio.start_server(
+                self._handle_inbound_connection, self.host, self.port
+            )
+            print(f"[P2P Node {self.port}] Listening (UNENCRYPTED) on {self.host}:{self.port}")
+            print(f"[P2P Node {self.port}] Limits: Inbound={MAX_INBOUND_CONNECTIONS}, Outbound={MAX_OUTBOUND_CONNECTIONS}, MaxPayload=20MB")
         
         # Start outbound seed connector
         asyncio.create_task(self._seed_connection_loop())
@@ -146,7 +232,10 @@ class P2PNode:
             return
             
         try:
-            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5.0)
+            if self.ssl_client_context:
+                reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port, ssl=self.ssl_client_context), timeout=5.0)
+            else:
+                reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5.0)
             self.outbound_peers[addr] = (reader, writer)
             print(f"[P2P Node {self.port}] Connected outbound to {addr}")
             
