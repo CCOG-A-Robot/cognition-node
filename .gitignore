@@ -16,6 +16,9 @@ certbot*/
 *.tar.gz
 *.zip
 
+# Lock files
+*.lock
+
 # Agent and Internal Metadata
 memory/
 *.md
