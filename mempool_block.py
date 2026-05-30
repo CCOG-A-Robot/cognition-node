@@ -135,7 +135,7 @@ class Mempool:
         self.pending_transactions.append(tx)
 
 class Block:
-    def __init__(self, index, previous_hash, transactions, semantic_payload, difficulty, nonce=0):
+    def __init__(self, index, previous_hash, transactions, semantic_payload, difficulty, nonce=0, block_hash=None):
         self.index = index
         self.timestamp = time.time()
         self.transactions = transactions
@@ -143,7 +143,10 @@ class Block:
         self.semantic_payload = semantic_payload
         self.difficulty = difficulty
         self.nonce = nonce
-        self.hash = self.calculate_hash()
+        if block_hash is not None:
+            self.hash = block_hash
+        else:
+            self.hash = self.calculate_hash()
 
     def calculate_hash(self):
         block_string = json.dumps({
@@ -205,10 +208,10 @@ class Blockchain:
                     transactions=block_data["transactions"],
                     semantic_payload=block_data["semantic_payload"],
                     difficulty=block_data["difficulty"],
-                    nonce=block_data["nonce"]
+                    nonce=block_data["nonce"],
+                    block_hash=block_data["hash"]
                 )
                 block.timestamp = block_data["timestamp"]
-                block.hash = block_data["hash"]
                 self.chain.append(block)
                 
                 # Rebuild UTXOs
