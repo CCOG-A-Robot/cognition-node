@@ -542,7 +542,7 @@ def mempool_cmd(args):
     print("\n")
 
 def main():
-    global blockchain_instance, mempool_instance, node_wallet, NODE_PORT
+    global blockchain_instance, mempool_instance, node_wallet
 
     parser = argparse.ArgumentParser(description="Cognition Coin Core Node CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available node commands")
@@ -550,7 +550,7 @@ def main():
     # Wallet Command
     wallet_parser = subparsers.add_parser("wallet", help="Manage cryptographic keys")
     wallet_parser.add_argument("action", choices=["create", "load", "balance", "history"], help="Action to perform")
-    wallet_parser.add_argument("--port", type=int, default=8000, help="Specify the node port to associate the wallet with")
+    wallet_parser.add_argument("--port", type=int, default=P2P_PORT, help="Specify the node P2P port to associate the wallet with")
 
     # Node Command
     node_parser = subparsers.add_parser("node", help="Run the full verification node (P2P + API)")
@@ -573,11 +573,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Set global NODE_PORT if specified, otherwise it defaults to 8000
-    if hasattr(args, 'port'):
-        NODE_PORT = args.port
-
-    # Update default wallet file if NODE_PORT is known
     if args.command == "tx" and args.wallet_file is None:
         args.wallet_file = f"wallets/wallet_{P2P_PORT}.pem"
 

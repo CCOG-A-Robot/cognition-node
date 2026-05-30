@@ -115,7 +115,7 @@ async def generate_wallet(filename: str = None):
 class TransactionRequest(BaseModel):
     recipient: str
     amount: float
-    wallet_file: str = "wallets/wallet_8000.pem"
+    wallet_file: str = f"wallets/wallet_{core_node.P2P_PORT}.pem"
 
 @app.get("/blockchain/info", dependencies=[Depends(verify_token)])
 async def get_blockchain_info():
