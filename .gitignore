@@ -55,3 +55,9 @@ htaccess_content
 
 # Exceptions for required files
 !requirements.txt
+
+# Workspace gunk (not repo files)
+forensic_auditor.py
+ftp_fix.py
+simple_finder.py
+models/
