@@ -142,6 +142,12 @@ def mining_thread_func(miner_wallet):
             current_difficulty = blockchain_instance.get_difficulty()
             previous_block_hash = blockchain_instance.chain[-1].hash
             
+            # Track block times for network health display
+            if not hasattr(mining_thread_func, 'last_block_time'):
+                mining_thread_func.last_block_time = time.time()
+                mining_thread_func.block_times = []
+            current_block_start = time.time()
+            
             # Generate a dynamic challenge based on the previous block hash
             semantic_constraint_prompt = generate_semantic_challenge(previous_block_hash, current_difficulty)
             seed = int(previous_block_hash, 16)
@@ -230,10 +236,28 @@ def mining_thread_func(miner_wallet):
             
             # 5. Add to Chain (add_block now handles validation, UTXOs, and mempool cleanup)
             if blockchain_instance.add_block(new_block):
+                # Block time tracking
+                elapsed = time.time() - current_block_start
+                block_gap = time.time() - mining_thread_func.last_block_time
+                mining_thread_func.last_block_time = time.time()
+                mining_thread_func.block_times.append(block_gap)
+                # Keep rolling window of last 100 blocks
+                if len(mining_thread_func.block_times) > 100:
+                    mining_thread_func.block_times = mining_thread_func.block_times[-100:]
+                avg_gap = sum(mining_thread_func.block_times) / len(mining_thread_func.block_times)
+                median_window = sorted(mining_thread_func.block_times)[len(mining_thread_func.block_times)//2]
+                
+                # Peer count
+                peer_count = 0
+                if p2p_node_instance:
+                    peer_count = len(p2p_node_instance.inbound_peers) + len(p2p_node_instance.outbound_peers)
+                
                 print(f"💎 Block {new_block.index} Mined Successfully by YOU ({miner_wallet.public_key[:8]})!")
                 print(f"   -> Hash: {new_block.hash[:16]}...")
-                print(f"   -> Difficulty: {new_block.difficulty}")
-                print(f"   -> TX Count: {len(new_block.transactions)}\n")
+                print(f"   -> Difficulty: {new_block.difficulty:.1f}")
+                print(f"   -> Block Time: {block_gap:.0f}s (avg(last 100): {avg_gap:.0f}s | median: {median_window:.0f}s | target: 150s)")
+                print(f"   -> TX Count: {len(new_block.transactions)} | Mempool: {len(blockchain_instance.mempool.pending_transactions)} pending")
+                print(f"   -> Peers: {peer_count} connected | Chain: {len(blockchain_instance.chain)} blocks | Diff: {current_difficulty:.1f}\n")
 
                 # 6. Broadcast the new block to the network
                 if p2p_node_instance:
