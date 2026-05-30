@@ -60,6 +60,10 @@ MAX_OUTBOUND_CONNECTIONS = 10
 MAX_PAYLOAD_SIZE = 20 * 1024 * 1024 # 20 MB memory DoS shield
 BAN_DURATION = 86400 # 24 hours in seconds
 
+# Per-Peer Rate Limiting
+MAX_MSG_PER_SECOND = 10  # Max messages per second per peer before ban
+MAX_BURST = 20  # Allow a burst of up to this many messages before rate counting kicks in
+
 # --- Message Types ---
 MSG_HANDSHAKE = "HANDSHAKE"
 MSG_GET_PEERS = "GET_PEERS"
@@ -115,6 +119,9 @@ class P2PNode:
             print(f"[P2P Node {self.port}] ⚠️ Could not initialize TLS: {e}. Running without encryption.")
             self.ssl_context = None
             self.ssl_client_context = None
+        
+        # Per-peer rate limiting tracking: { "ip": [timestamps] }
+        self._peer_msg_times = {}
         
         # Asyncio Event Loop running in a dedicated thread
         self.loop = asyncio.new_event_loop()
@@ -273,6 +280,17 @@ class P2PNode:
                 # 3. Read the exact message body
                 msg_bytes = await reader.readexactly(msg_len)
                 message = json.loads(msg_bytes.decode('utf-8'))
+                
+                # 4. Per-peer message rate limiting (flood protection)
+                now = time.time()
+                if ip not in self._peer_msg_times:
+                    self._peer_msg_times[ip] = []
+                # Prune timestamps older than 1 second
+                self._peer_msg_times[ip] = [t for t in self._peer_msg_times[ip] if now - t < 1.0]
+                self._peer_msg_times[ip].append(now)
+                if len(self._peer_msg_times[ip]) > MAX_MSG_PER_SECOND:
+                    self.ban_ip(ip, f"Rate limit exceeded ({len(self._peer_msg_times[ip])} msgs in 1s, max {MAX_MSG_PER_SECOND})")
+                    break
                 
                 await self._process_message(writer, addr, ip, message)
                 
