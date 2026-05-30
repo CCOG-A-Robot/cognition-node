@@ -238,8 +238,10 @@ class P2PNode:
         if len(self.outbound_peers) >= MAX_OUTBOUND_CONNECTIONS:
             return
             
+        tls_attempted = False
         try:
             if self.ssl_client_context:
+                tls_attempted = True
                 reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port, ssl=self.ssl_client_context), timeout=5.0)
             else:
                 reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5.0)
@@ -256,8 +258,26 @@ class P2PNode:
 
             # Start listening to this outbound peer
             asyncio.create_task(self._connection_loop(reader, writer, addr, ip))
-        except Exception:
-            pass # Connection failed silently
+        except Exception as e:
+            # If TLS failed but the peer might be on plaintext (old node),
+            # try a brief fallback to send them a deprecation warning
+            if tls_attempted and self.ssl_client_context:
+                try:
+                    fallback_reader, fallback_writer = await asyncio.wait_for(
+                        asyncio.open_connection(host, port), timeout=3.0
+                    )
+                    print(f"[P2P Node {self.port}] ⚠️ Peer {addr} doesn't support TLS. Sending deprecation notice...")
+                    dep_msg = json.dumps({
+                        "type": MSG_REJECT,
+                        "payload": {"reason": "NETWORK UPGRADE REQUIRED. Your node software is too old. Please run `git pull` from your cognition-node directory and restart. If you don't have git, re-download from https://github.com/CCOG-A-Robot/cognition-node. This node requires TLS encryption."}
+                    }).encode('utf-8')
+                    header = f"{len(dep_msg):<10}".encode('utf-8')
+                    fallback_writer.write(header + dep_msg)
+                    await fallback_writer.drain()
+                    fallback_writer.close()
+                    await fallback_writer.wait_closed()
+                except Exception:
+                    pass # fallback failed, silently move on
 
     async def _connection_loop(self, reader, writer, addr, ip):
         try:
