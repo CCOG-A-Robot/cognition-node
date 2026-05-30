@@ -1,13 +1,44 @@
 import argparse
+import socket
+import struct
 import time
 import os
 import threading
 
 # Import core components
-from wallet_transaction import Wallet, Transaction, TransactionInput, TransactionOutput, UTXO
-from mempool_block import Mempool, Block, Blockchain, UTXOSet, generate_semantic_challenge # Import the dynamic prompt generator
+from wallet_transaction import Wallet, Transaction, TransactionInput, TransactionOutput, UTXO, prompt_passphrase
+from mempool_block import Mempool, Block, Blockchain, UTXOSet, generate_semantic_challenge, MAX_FUTURE_BLOCK_TIME, MAX_PAST_BLOCK_TIME
 from p2p_network import P2PNode, MSG_NEW_TX, MSG_NEW_BLOCK
-from semantic_miner import ai_miner as semantic_ai_miner, verify_network_rules # Import the actual AI miner
+from semantic_miner import ai_miner as semantic_ai_miner, verify_network_rules
+
+def check_system_clock_skew():
+    """
+    Check local system clock against NTP. Returns (skew_seconds, reference_time) or (None, None) on failure.
+    Uses raw NTP (RFC 4330) — no external dependencies.
+    Positive skew = local clock is ahead of NTP.
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(4.0)
+        # NTP request packet (mode 3 - client, v4)
+        packet = b'\x1b' + 47 * b'\x00'
+        sock.sendto(packet, ("pool.ntp.org", 123))
+        data, addr = sock.recvfrom(1024)
+        if len(data) < 48:
+            sock.close()
+            return None, None
+        # Extract transmit timestamp (bytes 40-47), convert to Unix time
+        import struct
+        t = struct.unpack("!12I", data)[10]
+        # NTP epoch = Jan 1 1900, Unix epoch = Jan 1 1970
+        ntp_to_unix = 2208988800
+        ntp_time = t - ntp_to_unix
+        local_time = time.time()
+        sock.close()
+        skew = local_time - ntp_time
+        return skew, ntp_time
+    except Exception:
+        return None, None
 
 # --- GLOBAL NODE INSTANCES (Initialized when the node starts) ---
 blockchain_instance = None
@@ -36,22 +67,20 @@ def wallet_cmd(args):
             return
         print("🌍 Generating new cryptographic identity (SECP256k1)...")
         wallet = Wallet()
-        with open(WALLET_FILE, "w") as f:
-            f.write(wallet.private_key.to_pem().decode('utf-8'))
+        pw = prompt_passphrase(confirm=True, optional=True)
+        wallet.save_to_file(WALLET_FILE, passphrase=pw if pw else None)
         print("\nWallet created successfully!")
         print(f"Public Key (Address):  {wallet.public_key}")
-        print(f"Private Key saved to:  {WALLET_FILE}")
-        print("\n[!] STORE YOUR PRIVATE KEY SECURELY. THE NETWORK CANNOT RECOVER IT.")
+        print("\n[!] STORE YOUR PRIVATE KEY AND/OR PASSPHRASE SECURELY. THE NETWORK CANNOT RECOVER IT.")
         node_wallet = wallet
 
     elif args.action == "load":
         if not os.path.exists(WALLET_FILE):
             print(f"[Wallet] No wallet found at {WALLET_FILE}. Use 'create'.")
             return
-        with open(WALLET_FILE, "r") as f:
-            private_key_pem = f.read()
-        wallet = Wallet(private_key_pem=private_key_pem)
-        print(f"[Wallet] Loaded wallet from {WALLET_FILE}")
+        pw = prompt_passphrase(confirm=False, optional=True)
+        wallet, was_encrypted = Wallet.load_from_file(WALLET_FILE, passphrase=pw if pw else None)
+        print(f"[Wallet] Loaded wallet from {WALLET_FILE}" + (" (encrypted)" if was_encrypted else " (unencrypted)"))
         print(f"Public Key (Address):  {wallet.public_key}")
         node_wallet = wallet
 
@@ -59,9 +88,8 @@ def wallet_cmd(args):
         if not node_wallet:
             # Try to load if not already loaded
             if os.path.exists(WALLET_FILE):
-                with open(WALLET_FILE, "r") as f:
-                    private_key_pem = f.read()
-                node_wallet = Wallet(private_key_pem=private_key_pem)
+                pw = prompt_passphrase(confirm=False, optional=True)
+                node_wallet, _ = Wallet.load_from_file(WALLET_FILE, passphrase=pw if pw else None)
                 print(f"[Wallet] Automatically loaded wallet from {WALLET_FILE}")
             else:
                 print("[Wallet] No wallet loaded or found. Please 'create' or 'load' a wallet first.")
@@ -74,9 +102,8 @@ def wallet_cmd(args):
     elif args.action == "history":
         if not node_wallet:
             if os.path.exists(WALLET_FILE):
-                with open(WALLET_FILE, "r") as f:
-                    private_key_pem = f.read()
-                node_wallet = Wallet(private_key_pem=private_key_pem)
+                pw = prompt_passphrase(confirm=False, optional=True)
+                node_wallet, _ = Wallet.load_from_file(WALLET_FILE, passphrase=pw if pw else None)
                 print(f"[Wallet] Automatically loaded wallet from {WALLET_FILE}")
             else:
                 print("[Wallet] No wallet loaded or found.")
@@ -133,8 +160,11 @@ def mining_thread_func(miner_wallet):
     print(f"⛏️  Initializing Semantic Miner for address: {miner_wallet.public_key[:16]}...")
     print(f"Targeting 2.5 Min Block Time. Halving Schedule: 420,480 blocks.")
 
-    # Small delay to allow the P2P node to start up fully
-    time.sleep(5)
+    # Wait for P2P node to initialize (up to 5s, exit early when ready)
+    for _ in range(50):
+        if p2p_node_instance is not None:
+            break
+        time.sleep(0.1)
 
     try:
         while True:
@@ -278,6 +308,21 @@ def node_cmd(args):
     """Runs the full verification node, API, and optional miner."""
     global blockchain_instance, mempool_instance, p2p_node_instance, node_wallet
     os.makedirs("wallets", exist_ok=True)
+
+    # Clock skew check — warn early before mining or accepting blocks
+    clock_skew, _ = check_system_clock_skew()
+    if clock_skew is not None and abs(clock_skew) > 30:
+        print(f"⚠️  SYSTEM CLOCK SKEW DETECTED: {clock_skew:+.0f}s relative to NTP")
+        if abs(clock_skew) > MAX_FUTURE_BLOCK_TIME:
+            print("⚠️  Your clock is more than 2 hours off! Blocks you mine will be rejected by the network.")
+            print("⚠️  Fix your system time (e.g., `sudo ntpdate pool.ntp.org`) before mining.")
+        else:
+            print("⚠️  Minor clock drift detected. Timestamps may appear slightly off to peers.")
+    elif clock_skew is not None:
+        print(f"✅ System clock is within 30s of NTP (skew: {clock_skew:+.0f}s).")
+    else:
+        print("⏰ Could not reach NTP server — skipping clock skew check.")
+
     WALLET_FILE = f"wallets/wallet_{P2P_PORT}.pem"
 
     # Initialize blockchain and mempool
@@ -291,14 +336,13 @@ def node_cmd(args):
         if not os.path.exists(WALLET_FILE):
             print(f"[Node/Miner] Wallet not found at {WALLET_FILE}. Creating one...")
             node_wallet = Wallet()
-            with open(WALLET_FILE, "w") as f:
-                f.write(node_wallet.private_key.to_pem().decode('utf-8'))
+            pw = prompt_passphrase(confirm=True, optional=True)
+            node_wallet.save_to_file(WALLET_FILE, passphrase=pw if pw else None)
             print(f"[Node/Miner] Created and loaded new wallet for mining.")
         else:
-            with open(WALLET_FILE, "r") as f:
-                private_key_pem = f.read()
-            node_wallet = Wallet(private_key_pem=private_key_pem)
-            print(f"[Node/Miner] Loaded existing wallet from {WALLET_FILE} for mining.")
+            pw = prompt_passphrase(confirm=False, optional=True)
+            node_wallet, was_encrypted = Wallet.load_from_file(WALLET_FILE, passphrase=pw if pw else None)
+            print(f"[Node/Miner] Loaded wallet from {WALLET_FILE}" + (" (encrypted)" if was_encrypted else " (unencrypted)") + " for mining.")
 
     # Start P2P Node in a background thread
     print(f"🔗 Starting P2P Network Node on {NODE_HOST}:{P2P_PORT}...")
@@ -386,9 +430,8 @@ def tx_cmd(args):
 
     if not node_wallet:
         if os.path.exists(WALLET_FILE):
-            with open(WALLET_FILE, "r") as f:
-                private_key_pem = f.read()
-            node_wallet = Wallet(private_key_pem=private_key_pem)
+            pw = prompt_passphrase(confirm=False, optional=True)
+            node_wallet, _ = Wallet.load_from_file(WALLET_FILE, passphrase=pw if pw else None)
             print(f"[Tx] Automatically loaded wallet from {WALLET_FILE}")
         else:
             print("[Tx] No wallet loaded or found. Please 'create' or 'load' a wallet first to send coins.")

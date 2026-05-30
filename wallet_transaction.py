@@ -1,8 +1,84 @@
 import hashlib
 import json
+import os
+import sys
 import time
+import getpass
 # import uuid # No longer needed for real key generation
 from ecdsa import SigningKey, VerifyingKey, SECP256k1
+
+# --- Encrypted Key Storage ---
+# Uses Fernet (AES-128-CBC + HMAC-SHA256) with a passphrase-derived key.
+# The passphrase is NEVER stored on disk — only in memory for the session.
+
+def _derive_key(passphrase: str, salt: bytes) -> bytes:
+    """Derive a 32-byte Fernet-compatible key from passphrase + salt using PBKDF2."""
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=480000,
+    )
+    return kdf.derive(passphrase.encode('utf-8'))
+
+def encrypt_private_key(pem_bytes: bytes, passphrase: str) -> bytes:
+    """
+    Encrypt a PEM-encoded private key with a passphrase.
+    Returns bytes that can be written directly to a file.
+    Format: [16-byte salt][Fernet token (base64-encoded)]
+    """
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    import base64
+    
+    salt = os.urandom(16)
+    key = _derive_key(passphrase, salt)
+    # Fernet key must be 32-byte base64-urlsafe-encoded
+    fernet_key = base64.urlsafe_b64encode(key)
+    f = Fernet(fernet_key)
+    encrypted = f.encrypt(pem_bytes)
+    return salt + encrypted
+
+def decrypt_private_key(data: bytes, passphrase: str) -> bytes:
+    """
+    Decrypt an encrypted PEM file. Expects [16-byte salt][Fernet token].
+    Returns the original PEM bytes.
+    """
+    from cryptography.fernet import Fernet
+    import base64
+    
+    salt = data[:16]
+    encrypted_token = data[16:]
+    key = _derive_key(passphrase, salt)
+    fernet_key = base64.urlsafe_b64encode(key)
+    f = Fernet(fernet_key)
+    return f.decrypt(encrypted_token)
+
+def prompt_passphrase(confirm: bool = False, optional: bool = False) -> str:
+    """
+    Prompt user for a wallet passphrase.
+    If confirm=True, prompt twice and verify they match.
+    If optional=True, pressing Enter returns empty string (no encryption).
+    Returns the passphrase string.
+    """
+    while True:
+        prompt_text = "Enter wallet passphrase (or press Enter for no encryption): " if optional else "Enter wallet passphrase: "
+        pw = getpass.getpass(prompt_text)
+        if pw == "" and optional:
+            return pw
+        if len(pw) < 4:
+            print("[!] Passphrase must be at least 4 characters." if not optional else "[!] Passphrase must be at least 4 characters, or press Enter to skip.")
+            continue
+        if confirm:
+            pw2 = getpass.getpass("Confirm passphrase: ")
+            if pw != pw2:
+                print("[!] Passphrases do not match. Try again.")
+                continue
+        return pw
+
+# --- End Encrypted Key Storage ---
 
 # In a production environment, we would use the `ecdsa` or `cryptography` library 
 # for true SECP256k1 (Bitcoin-style) or Ed25519 public/private key generation.
@@ -70,14 +146,27 @@ class TransactionOutput:
         }
 
 class Wallet:
-    def __init__(self, private_key_pem=None):
+    def __init__(self, private_key_pem=None, passphrase=None):
         """
         A wallet doesn't hold coins. It holds cryptographic keys that prove 
         you have the right to alter the ledger.
+        
+        If private_key_pem is provided, load it (raw PEM or passphrase-encrypted).
+        If both private_key_pem and passphrase are given, decrypt first.
         """
         if private_key_pem:
-            # Load from PEM format (e.g., from a file)
-            self.private_key = SigningKey.from_pem(private_key_pem)
+            # Check if this is binary encrypted data or plaintext PEM
+            if isinstance(private_key_pem, bytes) and not private_key_pem.startswith(b'-----'):
+                # Encrypted binary format
+                if not passphrase:
+                    raise ValueError("Encrypted wallet data requires a passphrase.")
+                pem_bytes = decrypt_private_key(private_key_pem, passphrase)
+                self.private_key = SigningKey.from_pem(pem_bytes)
+            else:
+                # Raw PEM format (string or bytes starting with '-----')
+                if isinstance(private_key_pem, bytes):
+                    private_key_pem = private_key_pem.decode('utf-8')
+                self.private_key = SigningKey.from_pem(private_key_pem)
         else:
             # Generate a new private key
             self.private_key = SigningKey.generate(curve=SECP256k1)
@@ -85,6 +174,37 @@ class Wallet:
         self.public_key_vk = self.private_key.get_verifying_key()
         # The public address is derived from the public key, usually its hex representation
         self.public_key = self.public_key_vk.to_string().hex()
+    
+    @staticmethod
+    def load_from_file(filepath: str, passphrase: str = None):
+        """Load wallet from a file. Returns (Wallet, was_encrypted)."""
+        with open(filepath, 'rb') as f:
+            data = f.read()
+        # Detect encrypted format: starts with 16-byte salt, not a PEM header
+        if data.startswith(b'-----'):
+            # Plain PEM — load directly
+            wallet = Wallet(private_key_pem=data.decode('utf-8'))
+            return wallet, False
+        else:
+            # Encrypted format — requires passphrase
+            if not passphrase:
+                raise ValueError(f"Wallet file {filepath} appears encrypted but no passphrase provided.")
+            wallet = Wallet(private_key_pem=data, passphrase=passphrase)
+            return wallet, True
+    
+    def save_to_file(self, filepath: str, passphrase: str = None):
+        """Save wallet to a file. If passphrase is given, encrypt the PEM."""
+        pem_bytes = self.private_key.to_pem()
+        if passphrase:
+            encrypted = encrypt_private_key(pem_bytes, passphrase)
+            with open(filepath, 'wb') as f:
+                f.write(encrypted)
+            print(f"    -> Encrypted private key saved to: {filepath}")
+        else:
+            with open(filepath, 'w') as f:
+                f.write(pem_bytes.decode('utf-8'))
+            print(f"    -> Private key saved to: {filepath} (UNENCRYPTED)")
+            print("    -> [!] For Mainnet, use a passphrase to encrypt your key.")
 
     def sign_transaction(self, transaction, utxo_set):
         """

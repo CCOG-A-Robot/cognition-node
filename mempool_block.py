@@ -17,6 +17,12 @@ TARGET_BLOCK_TIME = 150  # 2.5 minutes
 DIFFICULTY_ADJUSTMENT_INTERVAL = 10  # Every 10 blocks
 INITIAL_DIFFICULTY = 1000.0
 
+# --- Timestamp Validation Bounds ---
+# Blocks with timestamps more than this far in the future are rejected
+MAX_FUTURE_BLOCK_TIME = 7200  # 2 hours
+# Blocks with timestamps more than this far in the past (relative to the previous block) are rejected
+MAX_PAST_BLOCK_TIME = 86400  # 24 hours
+
 def check_hash_target(hash_hex, difficulty):
     """
     Bitcoin-style proportional target validation.
@@ -382,7 +388,22 @@ class Blockchain:
             print(f"[Validation] Reject: Hash {block.hash} does not meet difficulty target {block.difficulty}")
             return False
 
-        # 4. Check Semantic Rules (The "AI" proof)
+        # 2. Timestamp Validation
+        now = time.time()
+        # Can't be too far in the future (fast-forward attack / clock drift)
+        if block.timestamp > now + MAX_FUTURE_BLOCK_TIME:
+            print(f"[Validation] Reject: Block timestamp {block.timestamp} is too far in the future (now={int(now)}).")
+            return False
+        # Can't be chronologically before the previous block
+        if block.timestamp < previous_block.timestamp:
+            print(f"[Validation] Reject: Block timestamp {block.timestamp} is before previous block {previous_block.timestamp}.")
+            return False
+        # Can't be too far in the past from the previous block (stale/fork attack)
+        if block.timestamp < previous_block.timestamp - MAX_PAST_BLOCK_TIME:
+            print(f"[Validation] Reject: Block timestamp {block.timestamp} is too far behind previous block {previous_block.timestamp}.")
+            return False
+
+        # 3. Check Semantic Rules (The "AI" proof)
         # Re-generate the challenge rules deterministically
         seed_val = int(previous_block.hash[:8], 16)
         topics = ["death of a star", "depths of the ocean", "behavior of black holes", "quantum entanglement", "evolution of intelligence", "heat death of the universe", "formation of mountains", "cycle of rain", "structure of DNA", "fusion of atoms", "birth of a galaxy", "erosion of stone"]
