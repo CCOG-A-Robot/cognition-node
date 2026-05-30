@@ -56,6 +56,9 @@ htaccess_content
 # Exceptions for required files
 !requirements.txt
 
+# Internal admin tools (not needed by testers)
+sync_ledger.py
+
 # Workspace gunk (not repo files)
 forensic_auditor.py
 ftp_fix.py
