@@ -122,6 +122,9 @@ class P2PNode:
         
         # Per-peer rate limiting tracking: { "ip": [timestamps] }
         self._peer_msg_times = {}
+
+        # Track the highest chain height reported by each peer: { "ip": height }
+        self._peer_heights = {}
         
         # Asyncio Event Loop running in a dedicated thread
         self.loop = asyncio.new_event_loop()
@@ -159,7 +162,8 @@ class P2PNode:
             print(f"[P2P Node {self.port}] Listening (UNENCRYPTED) on {self.host}:{self.port}")
             print(f"[P2P Node {self.port}] Limits: Inbound={MAX_INBOUND_CONNECTIONS}, Outbound={MAX_OUTBOUND_CONNECTIONS}, MaxPayload=20MB")
         
-        # Start outbound seed connector
+        # Fire off immediate seed connection, then start the periodic retry loop
+        asyncio.create_task(self._seed_connection_now())
         asyncio.create_task(self._seed_connection_loop())
         
         async with server:
@@ -206,6 +210,21 @@ class P2PNode:
         
         await self._connection_loop(reader, writer, addr, ip)
 
+    async def _seed_connection_now(self):
+        """One-shot immediate connection to all seed nodes. Fires on startup."""
+        for host, port in SEED_NODES:
+            if (host, port) != (self.host, self.port):
+                await self._connect_outbound(host, port)
+
+    def get_network_height(self):
+        """
+        Thread-safe: returns the highest block height known by any connected peer.
+        Returns -1 if no peers are connected or no peer info available.
+        """
+        if not self._peer_heights:
+            return -1
+        return max(self._peer_heights.values())
+
     async def _seed_connection_loop(self):
         # Get actual local IP to prevent self-connection
         try:
@@ -216,6 +235,8 @@ class P2PNode:
         except:
             my_ip = "127.0.0.1"
 
+        await asyncio.sleep(5) # Initial delay before first retry
+
         while self.running:
             for host, port in SEED_NODES:
                 # Removed the strict my_ip check as it can falsely trigger on NAT/VPN setups.
@@ -223,10 +244,10 @@ class P2PNode:
                 if (host, port) != (self.host, self.port):
                     await self._connect_outbound(host, port)
             
-            await asyncio.sleep(15) # Check every 15 seconds
-            
             if self.inbound_peers or self.outbound_peers:
                 await self._async_broadcast(MSG_GET_PEERS, {"sender_port": self.port})
+
+            await asyncio.sleep(5) # Retry every 5 seconds
 
     async def _connect_outbound(self, host, port):
         ip = host
@@ -329,10 +350,14 @@ class P2PNode:
                 pass
 
     def _remove_peer(self, addr):
+        ip = addr.split(":")[0]
         if addr in self.inbound_peers:
             del self.inbound_peers[addr]
         if addr in self.outbound_peers:
             del self.outbound_peers[addr]
+        # Also clean up stale peer height
+        if ip in self._peer_heights:
+            del self._peer_heights[ip]
 
     def broadcast_message(self, msg_type, payload, exclude_peer=None):
         """Thread-safe injection point for the synchronous core_node.py main thread"""
@@ -394,6 +419,8 @@ class P2PNode:
                 pass
             
             peer_height = payload.get("height")
+            if peer_height is not None:
+                self._peer_heights[ip] = peer_height
             if peer_height is not None and self.blockchain:
                 our_height = len(self.blockchain.chain) - 1
                 if peer_height > our_height:

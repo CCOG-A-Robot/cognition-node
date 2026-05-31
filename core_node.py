@@ -166,8 +166,31 @@ def mining_thread_func(miner_wallet):
             break
         time.sleep(0.1)
 
+    # Pre-mine IBD safety: if we're far behind the network, wait before mining
+    def _wait_for_sync():
+        """Block mining if more than 3 blocks behind the network tip."""
+        if p2p_node_instance is None:
+            return True  # No P2P = can't check = proceed
+        network_est = p2p_node_instance.get_network_height()
+        local = len(blockchain_instance.chain) - 1
+        if network_est < 0 or local >= network_est - 3:
+            return True  # Close enough or no peer info
+        print(f"⏳ [Miner] Behind network (local={local}, network~={network_est}). Waiting for sync...")
+        for _ in range(60):
+            time.sleep(1)
+            current = len(blockchain_instance.chain) - 1
+            current_net = p2p_node_instance.get_network_height()
+            if current >= max(network_est, current_net) - 3:
+                print(f"✅ [Miner] Synced to block {current}. Resuming.")
+                return True
+        print(f"⚠️ [Miner] Timed out waiting for sync (local={current}, network~={current_net}). Mining anyway.")
+        return True
+
     try:
         while True:
+            # 0. Re-sync guard: if we're far behind the network, don't mine
+            _wait_for_sync()
+
             # 1. Get the current difficulty and puzzle constraints from the blockchain
             current_difficulty = blockchain_instance.get_difficulty()
             previous_block_hash = blockchain_instance.chain[-1].hash
@@ -352,21 +375,41 @@ def node_cmd(args):
 
     # Start Miner in a background thread if enabled
     if args.mine:
-        # Wait to ensure P2P node has a chance to connect to at least one seed node
-        print("⏳ Waiting for P2P network synchronization before starting miner...")
-        sync_wait_time = 15
-        while sync_wait_time > 0:
+        # Phase 1: Wait for at least one P2P connection (max 30 seconds)
+        print("⏳ Waiting for P2P network connection...")
+        peer_wait = 30
+        connected = False
+        while peer_wait > 0 and not connected:
             if p2p_node_instance and (len(p2p_node_instance.inbound_peers) > 0 or len(p2p_node_instance.outbound_peers) > 0):
-                print(f"✅ Connected to {len(p2p_node_instance.inbound_peers) + len(p2p_node_instance.outbound_peers)} peers. Proceeding to mine.")
+                connected = True
                 break
             time.sleep(1)
-            sync_wait_time -= 1
+            peer_wait -= 1
             
-        if sync_wait_time == 0:
-            print("⚠️ WARNING: Could not connect to any peers after 15 seconds.")
+        if not connected:
+            print("⚠️ WARNING: Could not connect to any peers after 30 seconds.")
             print("⚠️ The miner will start, but you may be mining on an isolated fork!")
             print("⚠️ Please check your firewall and internet connection.")
-            
+        else:
+            # Phase 2: Wait for Initial Block Download to complete
+            network_height = p2p_node_instance.get_network_height()
+            local_height = len(blockchain_instance.chain) - 1
+            if local_height < network_height:
+                print(f"⏳ Syncing blocks from network ({local_height} -> {network_height})...")
+                ibd_wait = 60  # Give up to 60 seconds for IBD
+                while ibd_wait > 0:
+                    current_height = len(blockchain_instance.chain) - 1
+                    if current_height >= network_height:
+                        print(f"✅ Chain synced to block {current_height}. Proceeding to mine.")
+                        break
+                    current_network = p2p_node_instance.get_network_height()
+                    if current_network > network_height:
+                        network_height = current_network  # Network grew while we synced
+                    time.sleep(1)
+                    ibd_wait -= 1
+                else:
+                    print(f"⚠️ IBD in progress ({len(blockchain_instance.chain)-1}/{network_height}). Mining will start but may reject blocks.")
+        
         miner_thread = threading.Thread(target=mining_thread_func, args=(node_wallet,))
         miner_thread.daemon = True
         miner_thread.start()
