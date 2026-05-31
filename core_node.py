@@ -392,9 +392,18 @@ def node_cmd(args):
             print("⚠️ Please check your firewall and internet connection.")
         else:
             # Phase 2: Wait for Initial Block Download to complete
+            # The handshake is processed asynchronously — give the event loop
+            # time to populate _peer_heights before deciding what to sync.
+            handshake_wait = 8
+            while handshake_wait > 0 and p2p_node_instance.get_network_height() == 0:
+                time.sleep(1)
+                handshake_wait -= 1
+            
             network_height = p2p_node_instance.get_network_height()
             local_height = len(blockchain_instance.chain) - 1
-            if local_height < network_height:
+            
+            needs_sync = local_height < network_height
+            if needs_sync:
                 print(f"⏳ Syncing blocks from network ({local_height} -> {network_height})...")
                 ibd_wait = 60  # Give up to 60 seconds for IBD
                 while ibd_wait > 0:
