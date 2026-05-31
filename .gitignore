@@ -16,6 +16,9 @@ certbot*/
 *.tar.gz
 *.zip
 
+# Chain backups (Chain Preservation Protocol)
+backups/
+
 # Lock files
 *.lock
 

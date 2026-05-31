@@ -1,12 +1,16 @@
 import time
 import hashlib
+import gzip
+import shutil
 import json
 import os
+import time as timemod  # avoid shadowing the variable
 from wallet_transaction import UTXO, Transaction, TransactionInput, TransactionOutput
 
 # --- Robust Pathing ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_BLOCKCHAIN_FILE = os.path.join(SCRIPT_DIR, 'blockchain.json')
+BACKUP_DIR = os.path.join(SCRIPT_DIR, 'backups')
 # --------------------
 
 # We will import verify_network_rules inside the method to avoid circular imports 
@@ -182,9 +186,31 @@ class Blockchain:
             self.create_genesis_block()
             self.save_to_disk()
 
+    @staticmethod
+    def _backup_chain(filename):
+        """
+        Chain Preservation Protocol: timestamped gzipped backup before any
+        destructive write to the blockchain file. Ran on startup and before
+        IBD appends. This is the immutable rule that prevents operator error
+        from destroying the canonical chain.
+        """
+        if not os.path.exists(filename):
+            return
+        try:
+            os.makedirs(BACKUP_DIR, exist_ok=True)
+            ts = int(timemod.time())
+            backup_path = os.path.join(BACKUP_DIR, f"blockchain-{ts}.json.gz")
+            with open(filename, 'rb') as f_in:
+                with gzip.open(backup_path, 'wb') as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+        except Exception as e:
+            print(f"⚠️ [Backup] Failed to create backup of {filename}: {e}")
+
     def save_to_disk(self, filename=None):
         if filename is None:
             filename = DEFAULT_BLOCKCHAIN_FILE
+        # Backup existing chain before overwriting
+        self._backup_chain(filename)
         try:
             with open(filename, "w") as f:
                 json.dump([block.to_dict() for block in self.chain], f, indent=4)
@@ -195,7 +221,9 @@ class Blockchain:
         if filename is None:
             filename = DEFAULT_BLOCKCHAIN_FILE
 
-        import os
+        # Backup before loading — protects against node-initiated corruption
+        self._backup_chain(filename)
+
         if not os.path.exists(filename):
             return False
         try:
