@@ -394,8 +394,11 @@ def node_cmd(args):
             # Phase 2: Wait for Initial Block Download to complete
             # The handshake is processed asynchronously — give the event loop
             # time to populate _peer_heights before deciding what to sync.
-            handshake_wait = 8
-            while handshake_wait > 0 and p2p_node_instance.get_network_height() == 0:
+            handshake_wait = 15
+            while handshake_wait > 0:
+                nh = p2p_node_instance.get_network_height()
+                if nh > 0:
+                    break
                 time.sleep(1)
                 handshake_wait -= 1
             

@@ -219,10 +219,10 @@ class P2PNode:
     def get_network_height(self):
         """
         Thread-safe: returns the highest block height known by any connected peer.
-        Returns -1 if no peers are connected or no peer info available.
+        Returns 0 if no peers are connected or no handshake data available yet.
         """
         if not self._peer_heights:
-            return -1
+            return 0
         return max(self._peer_heights.values())
 
     async def _seed_connection_loop(self):
