@@ -244,7 +244,7 @@ class Blockchain:
         genesis_block = Block(0, "0", [coinbase_tx.to_dict()], genesis_message, float(self.difficulty))
         genesis_block.timestamp = 1776700000 # Fixed Genesis Block timestamp (Vanguard Testnet - Reset 2)
         genesis_block.nonce = 0
-        genesis_block.hash = genesis_block.calculate_hash() # Recalculate static hash
+        genesis_block.hash = "3fa5c49d00ea58100f7874a98e76c1053c4b9b41de02d204e306fa4e41c9e5d2" # Hardcoded canonical testnet genesis
         self.chain.append(genesis_block)
         
         self.utxo_set.add_utxo(UTXO(coinbase_tx.tx_id, 0, coinbase_output.amount, coinbase_output.recipient_address))
