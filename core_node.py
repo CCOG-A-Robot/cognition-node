@@ -176,13 +176,16 @@ def mining_thread_func(miner_wallet):
         if network_est < 0 or local >= network_est - 3:
             return True  # Close enough or no peer info
         print(f"⏳ [Miner] Behind network (local={local}, network~={network_est}). Waiting for sync...")
-        for _ in range(60):
+        # [FIX] Extended timeout from 60s to 600s (10 min) for large IBDs
+        for i in range(600):
             time.sleep(1)
             current = len(blockchain_instance.chain) - 1
             current_net = p2p_node_instance.get_network_height()
             if current >= max(network_est, current_net) - 3:
                 print(f"✅ [Miner] Synced to block {current}. Resuming.")
                 return True
+            if i > 0 and i % 60 == 0:
+                print(f"⏳ [Miner] Still syncing (local={current}, network~={current_net})...")
         print(f"⚠️ [Miner] Timed out waiting for sync (local={current}, network~={current_net}). Mining anyway.")
         return True
 
@@ -426,7 +429,9 @@ def node_cmd(args):
             needs_sync = local_height < network_height
             if needs_sync:
                 print(f"⏳ Syncing blocks from network ({local_height} -> {network_height})...")
-                ibd_wait = 60  # Give up to 60 seconds for IBD
+                # [FIX] Extended IBD wait — large chains (3400+ blocks at 50/batch) need several minutes
+                ibd_wait = 600  # Give up to 600 seconds (10 min) for IBD
+                last_report = 0
                 while ibd_wait > 0:
                     current_height = len(blockchain_instance.chain) - 1
                     if current_height >= network_height:
@@ -435,10 +440,13 @@ def node_cmd(args):
                     current_network = p2p_node_instance.get_network_height()
                     if current_network > network_height:
                         network_height = current_network  # Network grew while we synced
+                    if current_height > last_report:
+                        print(f"⏳ IBD progress: {current_height}/{network_height} blocks synced...")
+                        last_report = current_height
                     time.sleep(1)
                     ibd_wait -= 1
                 else:
-                    print(f"⚠️ IBD in progress ({len(blockchain_instance.chain)-1}/{network_height}). Mining will start but may reject blocks.")
+                    print(f"⚠️ IBD timed out ({len(blockchain_instance.chain)-1}/{network_height}). Mining will start but may reject blocks until sync completes.")
         
         miner_thread = threading.Thread(target=mining_thread_func, args=(node_wallet,))
         miner_thread.daemon = True

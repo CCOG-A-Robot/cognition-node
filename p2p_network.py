@@ -195,14 +195,20 @@ class P2PNode:
         addr = f"{ip}:{addr_info[1]}"
 
         if self.is_banned(ip):
-            writer.close()
-            await writer.wait_closed()
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
             return
 
         if len(self.inbound_peers) >= MAX_INBOUND_CONNECTIONS:
             print(f"[P2P Node {self.port}] Max inbound reached. Rejecting {addr}")
-            writer.close()
-            await writer.wait_closed()
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
             return
 
         self.inbound_peers[addr] = (reader, writer)
@@ -210,11 +216,55 @@ class P2PNode:
         
         await self._connection_loop(reader, writer, addr, ip)
 
+    def _get_local_ips(self):
+        """Collect all local IP addresses to prevent self-connection."""
+        ips = set()
+        ips.add("127.0.0.1")
+        ips.add("::1")
+        # Try UDP socket method (reliable for public IP)
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(2)
+            s.connect(('8.8.8.8', 80))
+            ips.add(s.getsockname()[0])
+            s.close()
+        except:
+            pass
+        # Enumerate all interfaces via getaddrinfo on hostname
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET):
+                ips.add(info[4][0])
+        except:
+            pass
+        # Enumerate all interfaces via getaddrinfo with empty host (returns local addresses)
+        try:
+            for info in socket.getaddrinfo(None, None, family=socket.AF_INET):
+                ips.add(info[4][0])
+        except:
+            pass
+        return ips
+
     async def _seed_connection_now(self):
         """One-shot immediate connection to all seed nodes. Fires on startup."""
+        my_ips = self._get_local_ips()
         for host, port in SEED_NODES:
-            if (host, port) != (self.host, self.port):
+            if (host, port) != (self.host, self.port) and host not in my_ips:
                 await self._connect_outbound(host, port)
+
+    def _get_local_ips_loop(self):
+        """Collect local IPs for use in the connection loop (non-blocking)."""
+        ips = set()
+        ips.add("127.0.0.1")
+        ips.add("::1")
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(2)
+            s.connect(('8.8.8.8', 80))
+            ips.add(s.getsockname()[0])
+            s.close()
+        except:
+            pass
+        return ips
 
     def get_network_height(self):
         """
@@ -226,22 +276,13 @@ class P2PNode:
         return max(self._peer_heights.values())
 
     async def _seed_connection_loop(self):
-        # Get actual local IP to prevent self-connection
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(('8.8.8.8', 80))
-            my_ip = s.getsockname()[0]
-            s.close()
-        except:
-            my_ip = "127.0.0.1"
+        my_ips = self._get_local_ips_loop()
 
         await asyncio.sleep(5) # Initial delay before first retry
 
         while self.running:
             for host, port in SEED_NODES:
-                # Removed the strict my_ip check as it can falsely trigger on NAT/VPN setups.
-                # Only prevent obvious 0.0.0.0 loopbacks if ports match.
-                if (host, port) != (self.host, self.port):
+                if (host, port) != (self.host, self.port) and host not in my_ips:
                     await self._connect_outbound(host, port)
             
             if self.inbound_peers or self.outbound_peers:
@@ -254,6 +295,9 @@ class P2PNode:
         addr = f"{host}:{port}"
         
         if self.is_banned(ip): return
+        # Belt-and-suspenders: prevent self-connection at the lowest level
+        if ip in self._get_local_ips():
+            return
         if addr in self.outbound_peers or addr in self.inbound_peers: return
         
         if len(self.outbound_peers) >= MAX_OUTBOUND_CONNECTIONS:
@@ -514,6 +558,7 @@ class P2PNode:
             if blocks and self.blockchain:
                 from mempool_block import Block
                 added_count = 0
+                fork_triggered = False
                 for block_data in blocks:
                     new_block = Block(
                         index=block_data["index"],
@@ -525,18 +570,21 @@ class P2PNode:
                     )
                     new_block.timestamp = block_data["timestamp"]
                     new_block.hash = block_data["hash"]
-                    
+
                     if len(self.blockchain.chain) > new_block.index and self.blockchain.chain[new_block.index].hash == new_block.hash:
                         continue
-                        
+
                     if self.blockchain.add_block(new_block):
                         added_count += 1
                     else:
                         our_height = len(self.blockchain.chain) - 1
                         await self._async_send(writer, MSG_RESOLVE_FORK, {"from_index": max(0, our_height - 20)})
+                        fork_triggered = True
                         break
-                
-                if added_count > 0 and len(blocks) == 50:
+
+                # [FIX] Don't request next batch if we triggered fork resolution
+                # The fork must resolve first, then MSG_FORK_BLOCKS handler will resume IBD
+                if not fork_triggered and added_count > 0 and len(blocks) == 50:
                     our_height = len(self.blockchain.chain) - 1
                     await self._async_send(writer, MSG_GET_BLOCKS, {"from_index": our_height + 1})
 
@@ -565,5 +613,11 @@ class P2PNode:
                     new_block.timestamp = block_data["timestamp"]
                     new_block.hash = block_data["hash"]
                     candidate_blocks.append(new_block)
-                
-                self.blockchain.replace_chain(candidate_blocks)
+
+                if self.blockchain.replace_chain(candidate_blocks):
+                    # [FIX] After fork resolution, resume IBD if still behind the network
+                    our_height = len(self.blockchain.chain) - 1
+                    network_height = self.get_network_height()
+                    if our_height < network_height:
+                        print(f"[P2P Node {self.port}] Fork resolved. Resuming IBD (local={our_height}, network~={network_height})...")
+                        await self._async_send(writer, MSG_GET_BLOCKS, {"from_index": our_height + 1})
