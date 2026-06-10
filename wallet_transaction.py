@@ -65,14 +65,32 @@ def prompt_passphrase(confirm: bool = False, optional: bool = False) -> str:
     """
     while True:
         prompt_text = "Enter wallet passphrase (or press Enter for no encryption): " if optional else "Enter wallet passphrase: "
-        pw = getpass.getpass(prompt_text)
+        try:
+            pw = getpass.getpass(prompt_text)
+        except EOFError:
+            # Non-TTY environment (Docker, cron, tmux with no terminal)
+            # Fall back to environment variable or empty passphrase
+            import os
+            env_pw = os.environ.get("CCOG_WALLET_PASSPHRASE", "")
+            if env_pw:
+                print("[*] Read wallet passphrase from CCOG_WALLET_PASSPHRASE environment variable.")
+                return env_pw
+            if optional:
+                print("[*] No terminal available. Using empty passphrase (no encryption).")
+                return ""
+            print("[!] No terminal available. Set CCOG_WALLET_PASSPHRASE environment variable or run interactively.")
+            sys.exit(1)
         if pw == "" and optional:
             return pw
         if len(pw) < 4:
             print("[!] Passphrase must be at least 4 characters." if not optional else "[!] Passphrase must be at least 4 characters, or press Enter to skip.")
             continue
         if confirm:
-            pw2 = getpass.getpass("Confirm passphrase: ")
+            try:
+                pw2 = getpass.getpass("Confirm passphrase: ")
+            except EOFError:
+                print("[!] No terminal available for confirmation. Set CCOG_WALLET_PASSPHRASE environment variable.")
+                sys.exit(1)
             if pw != pw2:
                 print("[!] Passphrases do not match. Try again.")
                 continue
